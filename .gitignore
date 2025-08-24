@@ -1,0 +1,43 @@
+## C# e .NET
+# Arquivos de build, binários e outros
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+
+# Pacotes e dependências
+[Pp]ackages/
+*.nupkg
+*.suo
+*.user
+
+# Diretórios e arquivos do Visual Studio
+.vs/
+*.vssscc
+*.vspscc
+*.vsmd
+[Cc]ache/
+[Ll]og/
+
+# Diretórios e arquivos do Rider
+.idea/
+.Rider/
+
+# Arquivos de usuário
+*.log
+*.bak
+*.orig
+[Tt]humbs.db
+
+# Arquivos de testes
+TestResults/
+*.trx
+
+# Certificados de segurança
+*.pfx
+*.snk
+
+# Arquivos gerados por tooling
+.DS_Store
+appsettings.development.json
+appsettings.Development.json

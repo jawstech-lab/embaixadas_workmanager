@@ -1,0 +1,11 @@
+{
+  "base": "default",
+  "dataBase": "2024-01-15T00:00:00Z",
+  "dataSolicitacao": "2025-08-19T10:30:00Z",
+  "empresa": "ma",
+  "usuario": "admin",
+  "validacoes": [
+      "4dabd6e8-94c8-4dd5-b924-4c63e9e60d03"
+  ]
+}
+

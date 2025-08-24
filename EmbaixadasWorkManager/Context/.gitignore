@@ -1,0 +1,37 @@
+# Context - Pasta de Documentação
+# Esta pasta contém apenas arquivos de documentação (.md)
+
+# Permitir apenas arquivos de documentação
+!*.md
+!*.txt
+
+# Ignorar arquivos temporários
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# Ignorar arquivos de sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Ignorar arquivos de IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# Ignorar arquivos de build
+bin/
+obj/
+*.exe
+*.dll
+*.pdb
+
+# Ignorar logs
+*.log
+*.out
+
+# Manter apenas documentação
+# Todos os arquivos .md devem ser versionados

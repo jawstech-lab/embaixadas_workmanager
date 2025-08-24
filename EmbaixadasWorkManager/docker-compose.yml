@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  localstack:
+    image: localstack/localstack:latest
+    container_name: embaiadas-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=dynamodb,sqs
+      - DEBUG=1
+      - DATA_DIR=/tmp/localstack/data
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - "${TMPDIR:-/tmp}/localstack:/tmp/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    networks:
+      - embaiadas-network
+
+  embaiadas-workmanager:
+    build: .
+    container_name: embaiadas-workmanager
+    depends_on:
+      - localstack
+    environment:
+      - AWS__Region=us-east-1
+      - AWS__UseProfile=false
+      - AWS__AccessKey=test
+      - AWS__SecretKey=test
+      - AWS__ServiceUrl=http://localstack:4566
+      - AWS__UseLocalStack=true
+      - SQS__FilaExecucao=fila-execucao
+      - SQS__FilaExecucaoQuery=fila-execucao-query-dev
+      - DynamoDB__TableNameExecucao=Execucao
+      - DynamoDB__TableNameVerificacao=Verificacao
+      - DynamoDB__TableNameExecucaoVerificacao=ExecucaoVerificacao
+      - DynamoDB__ServiceUrl=http://localstack:4566
+      - DynamoDB__UseLocalStack=true
+    networks:
+      - embaiadas-network
+
+networks:
+  embaiadas-network:
+    driver: bridge
