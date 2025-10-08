@@ -74,7 +74,15 @@ public class QueryExecutionProcessorService : IQueryExecutionProcessorService
             execucaoVerificacao.Status = resultado.Success ? StatusExecucaoVerificacao.Concluida : StatusExecucaoVerificacao.Erro;
             execucaoVerificacao.DataFim = DateTime.UtcNow;
             execucaoVerificacao.Resultado = resultado.Success ? resultado.Result : null;
-            execucaoVerificacao.Erro = resultado.Success ? null : resultado.Error;
+            execucaoVerificacao.Erro = resultado.Success ? null : new ErroDetalhado
+            {
+                ErrorCode = "QUERY_EXECUTION_FAILED",
+                Message = resultado.Error,
+                TechnicalDetails = resultado.Error,
+                IsRecoverable = false,
+                RetryAttempts = 0,
+                OccurredAt = DateTime.UtcNow
+            };
             execucaoVerificacao.TempoExecucaoMs = resultado.TempoExecucaoMs;
             execucaoVerificacao.DataAtualizacao = DateTime.UtcNow;
 

@@ -41,3 +41,5 @@ TestResults/
 .DS_Store
 appsettings.development.json
 appsettings.Development.json
+appsettings.json
+WorkerProcess/.vs/*

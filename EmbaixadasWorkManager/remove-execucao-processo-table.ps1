@@ -104,3 +104,23 @@ try {
 
 Write-Host ""
 Write-Host "=== FIM DA REMOÇÃO ===" -ForegroundColor Red
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

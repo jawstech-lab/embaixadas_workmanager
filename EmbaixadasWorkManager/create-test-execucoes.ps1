@@ -125,3 +125,4 @@ Write-Host ""
 
 Write-Host "Para verificar as execuções criadas:" -ForegroundColor Yellow
 Write-Host "aws dynamodb scan --table-name Execucoes --region $Region --profile $ProfileName" -ForegroundColor Cyan
+

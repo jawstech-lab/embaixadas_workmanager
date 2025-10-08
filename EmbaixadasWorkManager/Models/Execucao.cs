@@ -23,6 +23,9 @@ public class Execucao
     [DynamoDBProperty("Validacoes")]
     public List<string> Validacoes { get; set; } = new();
 
+    [DynamoDBProperty("IdEmbaixadas")]
+    public List<string> IdEmbaixadas { get; set; } = new();
+
     [DynamoDBProperty("Usuario")]
     public string Usuario { get; set; } = string.Empty;
 
@@ -37,6 +40,9 @@ public class Execucao
 
     [DynamoDBProperty("Erro")]
     public string? Erro { get; set; }
+
+    [DynamoDBProperty("Erros")]
+    public List<ErroExecucao> Erros { get; set; } = new();
 
     [DynamoDBProperty("Resultado")]
     public string? Resultado { get; set; }
@@ -53,5 +59,12 @@ public class Execucao
 
     [DynamoDBProperty("DataInicioProcessamento")]
     public DateTime? DataInicioProcessamento { get; set; }
+
+    // NOVOS CAMPOS - Parâmetros específicos da execução
+    [DynamoDBProperty("ParametrosExecucao")]
+    public List<ParametroExecucao> ParametrosExecucao { get; set; } = new();
+
+    [DynamoDBProperty("TotalApontamentos")]
+    public int TotalApontamentos { get; set; }
 }
 

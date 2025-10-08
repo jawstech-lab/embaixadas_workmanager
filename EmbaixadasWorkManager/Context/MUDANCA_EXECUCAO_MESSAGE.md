@@ -28,8 +28,10 @@ Esta mudança simplifica o fluxo de processamento de execuções. Ao invés de r
 ```
 
 #### **DEPOIS:**
-```
-92de1003-bec3-4767-985e-6eb500910a5a
+```json
+{
+  "execucaoId": "uuid-execucao-existente"
+}
 ```
 
 ### 2. **Fluxo de Processamento Atualizado**
@@ -141,9 +143,9 @@ dotnet run --environment Development
 - Define status inicial como "Pendente"
 
 ### **test-send-messages.ps1**
-- Envia mensagens SQS com apenas o ID da execução como string pura
+- Envia mensagens SQS com apenas o ID da execução
 - Gera GUIDs únicos para cada mensagem
-- Mensagens são extremamente simples: apenas o texto do GUID
+- Mensagens são muito mais simples e leves
 
 ## Monitoramento e Logs
 

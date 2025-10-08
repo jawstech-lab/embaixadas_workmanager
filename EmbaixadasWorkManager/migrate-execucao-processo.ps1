@@ -157,3 +157,23 @@ try {
 
 Write-Host ""
 Write-Host "=== FIM DA MIGRAÇÃO ===" -ForegroundColor Cyan
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

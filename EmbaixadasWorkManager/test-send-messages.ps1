@@ -47,8 +47,10 @@ for ($i = 1; $i -le $MessageCount; $i++) {
     # Gerar ID de execução (GUID)
     $execucaoId = [System.Guid]::NewGuid().ToString()
     
-    # A mensagem SQS contém apenas o ID da execução como string pura
-    $message = $execucaoId
+    # Criar mensagem JSON simplificada (apenas o ID da execução)
+    $message = @{
+        execucaoId = $execucaoId
+    } | ConvertTo-Json -Depth 1
 
     Write-Host "Enviando mensagem $i/$MessageCount..." -ForegroundColor Cyan
     Write-Host "  ExecucaoId: $execucaoId" -ForegroundColor Gray
@@ -80,8 +82,7 @@ if ($errorCount -gt 0) {
 }
 Write-Host ""
 
-Write-Host "IMPORTANTE: As mensagens contêm apenas o ID da execução como string pura." -ForegroundColor Yellow
-Write-Host "Exemplo: '92de1003-bec3-4767-985e-6eb500910a5a'" -ForegroundColor Yellow
+Write-Host "IMPORTANTE: As mensagens contêm apenas o ID da execução." -ForegroundColor Yellow
 Write-Host "Certifique-se de que as execuções existem na tabela Execucoes antes de processar." -ForegroundColor Yellow
 Write-Host ""
 

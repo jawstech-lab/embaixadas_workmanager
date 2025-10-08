@@ -35,3 +35,23 @@ public static class StatusExecucaoVerificacao
     /// </summary>
     public const string Cancelada = "Cancelada";
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

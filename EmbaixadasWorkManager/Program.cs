@@ -4,6 +4,8 @@ using Amazon.SQS;
 using EmbaixadasWorkManager.Configuration;
 using EmbaixadasWorkManager.Interfaces;
 using EmbaixadasWorkManager.Services;
+using EmbaixadasWorkManager.Middleware;
+using EmbaixadasWorkManager.Logging;
 using Microsoft.Extensions.Options;
 
 namespace EmbaixadasWorkManager;
@@ -12,124 +14,167 @@ public class Program
 {
     public static void Main(string[] args)
     {
-        IHost host = Host.CreateDefaultBuilder(args)
-            .ConfigureServices((context, services) =>
+        var builder = WebApplication.CreateBuilder(args);
+
+        // Configurar serviços
+        builder.Services.ConfigureServices(builder.Configuration);
+
+        var app = builder.Build();
+
+        // Configurar pipeline
+        app.ConfigurePipeline();
+
+        app.Run();
+    }
+}
+
+public static class ServiceCollectionExtensions
+{
+    public static IServiceCollection ConfigureServices(this IServiceCollection services, IConfiguration configuration)
+    {
+        // Configurações
+        services.Configure<AwsConfiguration>(
+            configuration.GetSection(AwsConfiguration.SectionName));
+        services.Configure<SqsConfiguration>(
+            configuration.GetSection(SqsConfiguration.SectionName));
+        services.Configure<DynamoDbConfiguration>(
+            configuration.GetSection(DynamoDbConfiguration.SectionName));
+        services.Configure<ProcessamentoConfiguration>(
+            configuration.GetSection(ProcessamentoConfiguration.SectionName));
+
+        // Registrar configurações como singletons para injeção direta
+        services.AddSingleton<SqsConfiguration>(provider =>
+        {
+            var options = provider.GetRequiredService<IOptions<SqsConfiguration>>();
+            return options.Value;
+        });
+
+        services.AddSingleton<DynamoDbConfiguration>(provider =>
+        {
+            var options = provider.GetRequiredService<IOptions<DynamoDbConfiguration>>();
+            return options.Value;
+        });
+
+        services.AddSingleton<ProcessamentoConfiguration>(provider =>
+        {
+            var options = provider.GetRequiredService<IOptions<ProcessamentoConfiguration>>();
+            return options.Value;
+        });
+
+        // AWS Services
+        var awsConfig = configuration.GetSection(AwsConfiguration.SectionName).Get<AwsConfiguration>();
+        if (awsConfig == null)
+        {
+            throw new InvalidOperationException("Configuração AWS não encontrada");
+        }
+
+        // DynamoDB
+        if (awsConfig.UseLocalStack)
+        {
+            services.AddSingleton<IAmazonDynamoDB>(provider =>
             {
-                // Configurações
-                services.Configure<AwsConfiguration>(
-                    context.Configuration.GetSection(AwsConfiguration.SectionName));
-                services.Configure<SqsConfiguration>(
-                    context.Configuration.GetSection(SqsConfiguration.SectionName));
-                services.Configure<DynamoDbConfiguration>(
-                    context.Configuration.GetSection(DynamoDbConfiguration.SectionName));
-
-                // Registrar configurações como singletons para injeção direta
-                services.AddSingleton<SqsConfiguration>(provider =>
+                var config = new AmazonDynamoDBConfig
                 {
-                    var config = context.Configuration.GetSection(SqsConfiguration.SectionName).Get<SqsConfiguration>();
-                    if (config == null)
-                    {
-                        throw new InvalidOperationException("Configuração SQS não encontrada");
-                    }
-                    return config;
-                });
-
-                // Cliente DynamoDB
-                if (context.Configuration.GetValue<bool>("AWS:UseProfile"))
+                    ServiceURL = awsConfig.ServiceUrl,
+                    UseHttp = true
+                };
+                return new AmazonDynamoDBClient(awsConfig.AccessKey, awsConfig.SecretKey, config);
+            });
+        }
+        else
+        {
+            services.AddSingleton<IAmazonDynamoDB>(provider =>
+            {
+                var config = new AmazonDynamoDBConfig
                 {
-                    // Usar perfil AWS CLI
-                    services.AddAWSService<IAmazonDynamoDB>();
-                }
-                else
+                    RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(awsConfig.Region)
+                };
+                return new AmazonDynamoDBClient(awsConfig.AccessKey, awsConfig.SecretKey, config);
+            });
+        }
+
+        // DynamoDB Context
+        services.AddSingleton<IDynamoDBContext>(provider =>
+        {
+            var client = provider.GetRequiredService<IAmazonDynamoDB>();
+            return new DynamoDBContext(client);
+        });
+
+        // SQS
+        if (awsConfig.UseLocalStack)
+        {
+            services.AddSingleton<IAmazonSQS>(provider =>
+            {
+                var config = new AmazonSQSConfig
                 {
-                    // Usar credenciais do appsettings.json
-                    services.AddSingleton<IAmazonDynamoDB>(provider =>
-                    {
-                        var awsConfig = context.Configuration.GetSection("AWS").Get<AwsConfiguration>();
-                        if (awsConfig == null)
-                        {
-                            throw new InvalidOperationException("Configuração AWS não encontrada");
-                        }
-                        
-                        var config = new AmazonDynamoDBConfig
-                        {
-                            RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(awsConfig.Region)
-                        };
-                        
-                        return new AmazonDynamoDBClient(awsConfig.AccessKey, awsConfig.SecretKey, config);
-                    });
-                }
-                
-                services.AddSingleton<IDynamoDBContext>(provider =>
+                    ServiceURL = awsConfig.ServiceUrl,
+                    UseHttp = true
+                };
+                return new AmazonSQSClient(awsConfig.AccessKey, awsConfig.SecretKey, config);
+            });
+        }
+        else
+        {
+            services.AddSingleton<IAmazonSQS>(provider =>
+            {
+                var config = new AmazonSQSConfig
                 {
-                    var client = provider.GetRequiredService<IAmazonDynamoDB>();
-                    return new DynamoDBContext(client);
-                });
+                    RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(awsConfig.Region)
+                };
+                return new AmazonSQSClient(awsConfig.AccessKey, awsConfig.SecretKey, config);
+            });
+        }
 
-                // Cliente SQS
-                if (context.Configuration.GetValue<bool>("AWS:UseProfile"))
-                {
-                    // Usar perfil AWS CLI
-                    services.AddAWSService<IAmazonSQS>();
-                }
-                else
-                {
-                    // Usar credenciais do appsettings.json
-                    services.AddSingleton<IAmazonSQS>(provider =>
-                    {
-                        var awsConfig = context.Configuration.GetSection("AWS").Get<AwsConfiguration>();
-                        if (awsConfig == null)
-                        {
-                            throw new InvalidOperationException("Configuração AWS não encontrada");
-                        }
-                        
-                        var config = new AmazonSQSConfig
-                        {
-                            RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(awsConfig.Region)
-                        };
-                        
-                        return new AmazonSQSClient(awsConfig.AccessKey, awsConfig.SecretKey, config);
-                    });
-                }
+        // Serviços - Singleton para compatibilidade com IHostedService
+        services.AddSingleton<IDynamoDbService, DynamoDbService>();
+        services.AddSingleton<ISqsService, SqsService>();
+        services.AddSingleton<IResilientSqsService, ResilientSqsService>();
+        services.AddSingleton<IConsultaService, ConsultaService>();
+        services.AddSingleton<IVerificacaoProcessorService, VerificacaoProcessorService>();
+        services.AddSingleton<IExecucaoProcessorService, ProcessorService>();
+        // IExecucaoProcessoService removido - CONSOLIDADO
+        services.AddSingleton<IProcessoProcessorService, ProcessoProcessorService>();
+        services.AddSingleton<IQueryExecutionProcessorService, QueryExecutionProcessorService>();
+        
+        // Novos serviços especializados
+        services.AddSingleton<IQueueHealthService, QueueHealthService>();
+        services.AddSingleton<IQueueManagerService, QueueManagerService>();
+        services.AddSingleton<IMessageProcessorService, MessageProcessorService>();
 
-                // Serviços - Singleton para compatibilidade com IHostedService
-                services.AddSingleton<IDynamoDbService, DynamoDbService>();
-                services.AddSingleton<ISqsService, SqsService>();
-                services.AddSingleton<IResilientSqsService, ResilientSqsService>();
-                services.AddSingleton<IConsultaService, ConsultaService>();
-                services.AddSingleton<IVerificacaoProcessorService, VerificacaoProcessorService>();
-                services.AddSingleton<IExecucaoProcessorService, ProcessorService>();
-                // IExecucaoProcessoService removido - CONSOLIDADO
-                services.AddSingleton<IProcessoProcessorService, ProcessoProcessorService>();
-                services.AddSingleton<IQueryExecutionProcessorService, QueryExecutionProcessorService>();
-                
-                // Novos serviços especializados
-                services.AddSingleton<IQueueHealthService, QueueHealthService>();
-                services.AddSingleton<IQueueManagerService, QueueManagerService>();
-                services.AddSingleton<IMessageProcessorService, MessageProcessorService>();
+        // Serviços de Log
+        services.AddSingleton<ILogService, LogService>();
 
-                // Worker
-                services.AddHostedService<Worker>();
-            })
-            .Build();
+        // Configurar logging personalizado
+        services.AddLogging(builder =>
+        {
+            // O provider será adicionado após a construção do app
+        });
 
-        // Log de inicialização
-        var logger = host.Services.GetRequiredService<ILogger<Program>>();
-        var awsConfig = host.Services.GetRequiredService<IOptions<AwsConfiguration>>();
-        var sqsConfig = host.Services.GetRequiredService<IOptions<SqsConfiguration>>();
-        var dynamoConfig = host.Services.GetRequiredService<IOptions<DynamoDbConfiguration>>();
+        // Controllers
+        services.AddControllers();
 
-        logger.LogInformation("=== Embaiadas WorkManager - Inicializando ===");
-        logger.LogInformation("Região AWS: {Region}", awsConfig.Value.Region);
-        logger.LogInformation("Fila Execução: {FilaExecucao}", sqsConfig.Value.FilaExecucao);
-        logger.LogInformation("Fila Execução Query: {FilaExecucaoQuery}", sqsConfig.Value.FilaExecucaoQuery);
-        logger.LogInformation("Fila Execução Processo: {FilaExecucaoProcesso}", sqsConfig.Value.FilaExecucaoProcesso);
-        logger.LogInformation("Tabela Execução: {TableName}", dynamoConfig.Value.TableNameExecucao);
-        logger.LogInformation("Tabela Verificação: {TableName}", dynamoConfig.Value.TableNameVerificacao);
-        logger.LogInformation("Tabela Execução Verificação: {TableName}", dynamoConfig.Value.TableNameExecucaoVerificacao);
-        // Tabela Execução Processo removida - CONSOLIDADA
-        logger.LogInformation("=== Configuração concluída ===");
+        // Worker
+        services.AddHostedService<Worker>();
 
-        host.Run();
+        return services;
+    }
+}
+
+public static class WebApplicationExtensions
+{
+    public static WebApplication ConfigurePipeline(this WebApplication app)
+    {
+        // Middleware de captura de logs
+        app.UseMiddleware<LogCaptureMiddleware>();
+
+        // Configurar logging personalizado
+        var logService = app.Services.GetRequiredService<ILogService>();
+        var loggerFactory = app.Services.GetRequiredService<ILoggerFactory>();
+        loggerFactory.AddProvider(new InMemoryLoggerProvider(logService));
+
+        // Mapear controllers
+        app.MapControllers();
+
+        return app;
     }
 }

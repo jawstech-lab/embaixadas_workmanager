@@ -59,10 +59,13 @@ public class ExecucaoVerificacao
     public string? Resultado { get; set; }
 
     [DynamoDBProperty("Erro")]
-    public string? Erro { get; set; }
+    public ErroDetalhado? Erro { get; set; }
 
     [DynamoDBProperty("TempoExecucaoMs")]
     public long? TempoExecucaoMs { get; set; }
+
+    [DynamoDBProperty("TotalRecordsProcessados")]
+    public int TotalRecordsProcessados { get; set; }
 
     // Configurações
     [DynamoDBProperty("TimeoutSegundos")]
@@ -76,6 +79,16 @@ public class ExecucaoVerificacao
 
     [DynamoDBProperty("MaxTentativas")]
     public int MaxTentativas { get; set; } = 3;
+
+    // Dados da Verificação (para evitar joins)
+    [DynamoDBProperty("TipoApontamento")]
+    public string TipoApontamento { get; set; } = string.Empty;
+
+    [DynamoDBProperty("Nivel")]
+    public int Nivel { get; set; }
+
+    [DynamoDBProperty("IdEmbaixadas")]
+    public List<string> IdEmbaixadas { get; set; } = new();
 
     // Metadados
     [DynamoDBProperty("Metadata")]
@@ -93,8 +106,8 @@ public class ExecucaoVerificacao
 
     public ExecucaoVerificacao(string execucaoId, string verificacaoId)
     {
-        // Criar ID único baseado na combinação ExecucaoId#VerificacaoId
-        Id = $"{execucaoId}#{verificacaoId}";
+        // Criar ID único 
+        Id = Guid.NewGuid().ToString();
         ExecucaoId = execucaoId;
         VerificacaoId = verificacaoId;
     }

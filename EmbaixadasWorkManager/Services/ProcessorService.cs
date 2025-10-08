@@ -1,5 +1,7 @@
 using EmbaixadasWorkManager.Interfaces;
 using EmbaixadasWorkManager.Models;
+using EmbaixadasWorkManager.Configuration;
+using Microsoft.Extensions.Options;
 using System.Text.Json;
 
 namespace EmbaixadasWorkManager.Services;
@@ -10,17 +12,20 @@ public class ProcessorService : IExecucaoProcessorService
     private readonly IDynamoDbService _dynamoDbService;
     private readonly IVerificacaoProcessorService _verificacaoProcessor;
     private readonly ISqsService _sqsService;
+    private readonly ProcessamentoConfiguration _processamentoConfig;
 
     public ProcessorService(
         ILogger<ProcessorService> logger,
         IDynamoDbService dynamoDbService,
         IVerificacaoProcessorService verificacaoProcessor,
-        ISqsService sqsService)
+        ISqsService sqsService,
+        IOptions<ProcessamentoConfiguration> processamentoConfig)
     {
         _logger = logger;
         _dynamoDbService = dynamoDbService;
         _verificacaoProcessor = verificacaoProcessor;
         _sqsService = sqsService;
+        _processamentoConfig = processamentoConfig.Value;
     }
 
     public async Task<bool> ProcessExecucaoMessageAsync(string messageBody, string messageId)
@@ -129,9 +134,79 @@ public class ProcessorService : IExecucaoProcessorService
                 execucao.Base, execucao.Empresa, execucao.Validacoes.Count);
 
             var queriesEnviadas = 0;
+            var validacoesParaProcessar = new List<string>();
+
+            // Verificar se a execução tem validações específicas
+            if (execucao.Validacoes != null && execucao.Validacoes.Any())
+            {
+                _logger.LogInformation("Execução tem {Count} validações específicas", execucao.Validacoes.Count);
+                validacoesParaProcessar = execucao.Validacoes;
+            }
+            else if (_processamentoConfig.BuscarTodasVerificacoesSeVazio)
+            {
+                List<Verificacao> todasVerificacoes;
+                
+                // Verificar se a execução tem filtro de embaixadas
+                if (execucao.IdEmbaixadas != null && execucao.IdEmbaixadas.Any())
+                {
+                    _logger.LogInformation("Execução sem validações específicas. Buscando verificações filtradas por {Count} embaixadas", 
+                        execucao.IdEmbaixadas.Count);
+                    _logger.LogDebug("Embaixadas da execução: {Embaixadas}", string.Join(", ", execucao.IdEmbaixadas));
+                    
+                    // Buscar verificações filtradas por embaixadas
+                    todasVerificacoes = await _dynamoDbService.GetVerificacoesPorEmbaixadasAsync(execucao.IdEmbaixadas);
+                }
+                else
+                {
+                    _logger.LogInformation("Execução sem validações específicas e sem filtro de embaixadas. Buscando todas as verificações disponíveis");
+                    
+                    // Buscar todas as verificações disponíveis
+                    todasVerificacoes = await _dynamoDbService.GetTodasVerificacoesAsync();
+                }
+                
+                validacoesParaProcessar = todasVerificacoes.Select(v => v.Id).ToList();
+                
+                /* 🔍 TODO LOG TEMPORÁRIO: Listar todas as validações disponíveis
+                _logger.LogInformation("🔍 Validações disponíveis ({Total}):", todasVerificacoes.Count);
+                foreach (var v in todasVerificacoes.Take(10)) // Mostra apenas as primeiras 10
+                {
+                    _logger.LogInformation("🔍 - ID: {Id} | Nome: {Nome}", v.Id, v.NomeVerificacao);
+                }
+                if (todasVerificacoes.Count > 10)
+                {
+                    _logger.LogInformation("🔍 ... e mais {Count} validações", todasVerificacoes.Count - 10);
+                }
+                
+                // 🧪 FILTRO TEMPORÁRIO PARA TESTE - REMOVER DEPOIS
+                var idValidacaoTeste = "07f19dda-4778-48de-8629-1fa322c71ed0"; // ⚠️ ALTERE AQUI com o ID exato
+                var validacaoEncontrada = todasVerificacoes.FirstOrDefault(v => v.Id == idValidacaoTeste);
+                
+                if (validacaoEncontrada != null)
+                {
+                    validacoesParaProcessar = new List<string> { idValidacaoTeste };
+                    _logger.LogWarning("🧪 MODO TESTE: Processando apenas validação {Id} - {Nome}", 
+                        validacaoEncontrada.Id, validacaoEncontrada.NomeVerificacao);
+                }
+                else
+                {
+                    _logger.LogWarning("🧪 MODO TESTE: Validação com ID '{IdValidacao}' não encontrada. Processando todas as {Total} validações.", 
+                        idValidacaoTeste, todasVerificacoes.Count);
+                }
+                // 🧪 TODO FIM DO FILTRO TEMPORÁRIO */
+                
+                // Atualizar a execução com as validações encontradas
+                execucao.Validacoes = validacoesParaProcessar;
+                
+                _logger.LogInformation("Encontradas {Count} verificações para processar", validacoesParaProcessar.Count);
+            }
+            else
+            {
+                _logger.LogWarning("Execução sem validações e busca automática desabilitada. Nenhuma verificação será processada.");
+                validacoesParaProcessar = new List<string>();
+            }
 
             // Iterar sobre cada validação, delegando ao VerificacaoProcessor
-            foreach (var verificacaoId in execucao.Validacoes)
+            foreach (var verificacaoId in validacoesParaProcessar)
             {
                 try
                 {

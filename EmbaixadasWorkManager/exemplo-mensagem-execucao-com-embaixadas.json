@@ -1,0 +1,25 @@
+{
+  "Id": "92de1003-bec3-4767-985e-6eb500910a5a",
+  "Base": "BaseTeste",
+  "DataBase": "2024-01-01T00:00:00Z",
+  "DataSolicitacao": "2024-01-01T00:00:00Z",
+  "Empresa": "EmpresaTeste",
+  "Usuario": "usuario.teste",
+  "Status": "Pendente",
+  "Validacoes": [],
+  "IdEmbaixadas": [
+    "7530416f-b46f-4048-8d46-0c3702226bea",
+    "7f09e5e3-2a0f-4a07-8320-a894c2bb04dd",
+    "8977b9f0-4e31-49c0-b628-e00aaaf5bcbb",
+    "df044ecc-51e6-47e7-99f5-dc151e5979d8"
+  ],
+  "ParametrosExecucao": [],
+  "QuantidadeVerificacoes": 0,
+  "VerificacoesProcessadas": 0,
+  "VerificacoesComErro": 0,
+  "TotalApontamentos": 0,
+  "Erros": []
+}
+
+
+

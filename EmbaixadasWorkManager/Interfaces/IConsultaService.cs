@@ -10,6 +10,6 @@ public interface IConsultaService
 	// Busca consultas ativas
 	Task<IEnumerable<Consulta>> GetConsultasAtivasAsync();
 
-	// Processa consulta substituindo parâmetros com base em ValoresParametros (IdParametro -> Valor)
-	Task<string> ProcessarConsultaComParametrosAsync(string sqlOriginal, List<VerificacaoParametroValor> valoresParametros);
+	// Processa consulta substituindo parâmetros com base em ValoresParametros (IdParametro -> Valor) e ParametrosExecucao (Alias -> Valor)
+	Task<string> ProcessarConsultaComParametrosAsync(string sqlOriginal, List<VerificacaoParametroValor> valoresParametros, List<ParametroExecucao>? parametrosExecucao = null);
 }

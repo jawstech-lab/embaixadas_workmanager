@@ -28,6 +28,7 @@ public class VerificacaoProcessorService : IVerificacaoProcessorService
 
 	public async Task<int> ProcessarVerificacaoAsync(Execucao execucao, string verificacaoId)
 	{
+		
 		try
 		{
 			_logger.LogInformation("Processando verificação: {VerificacaoId} para execução {ExecucaoId}", verificacaoId, execucao.Id);
@@ -51,10 +52,11 @@ public class VerificacaoProcessorService : IVerificacaoProcessorService
 
 			_logger.LogInformation("Processando consulta: {IdConsulta} - {Identificador}", consulta.Id, consulta.Identificador);
 
-			// Processar consulta com substituição de parâmetros
+			// Processar consulta com substituição de parâmetros (verificação + execução)
 			var sqlProcessado = await _consultaService.ProcessarConsultaComParametrosAsync(
 				consulta.QuerySql, 
-				verificacao.ValoresParametros);
+				verificacao.ValoresParametros,
+				execucao.ParametrosExecucao);
 
 			_logger.LogInformation("SQL processado com parâmetros: {SqlProcessado}", sqlProcessado);
 
@@ -64,27 +66,29 @@ public class VerificacaoProcessorService : IVerificacaoProcessorService
 
 			if (execucaoVerificacao == null)
 			{
-				_logger.LogError("Falha ao criar ExecucaoVerificacao para: {VerificacaoId}", verificacaoId);
+				_logger.LogError("Falha ao criar ExecucaoVerificacao para: {ExecucaoId}#{VerificacaoId}", execucao.Id, verificacao.Id);
 				return 0;
 			}
 
+			var id = execucaoVerificacao.Id;
+
 			// Enviar APENAS o ID para a fila (nova arquitetura)
-			var enviada = await EnviarQueryExecutionAsync(execucaoVerificacao.VerificacaoId);
+			var enviada = await EnviarQueryExecutionAsync(id);
 			
 			if (enviada)
 			{
-				_logger.LogDebug("Query execution enviada para fila: {VerificacaoId}", verificacaoId);
+				_logger.LogDebug("Query execution enviada para fila: {id}", id);
 				return 1;
 			}
 			else
 			{
-				_logger.LogError("Falha ao enviar query execution: {VerificacaoId}", verificacaoId);
+				_logger.LogError("Falha ao enviar query execution: {id}", id);
 				return 0;
 			}
 		}
 		catch (Exception ex)
 		{
-			_logger.LogError(ex, "Erro ao processar verificação: {VerificacaoId}", verificacaoId);
+			_logger.LogError(ex, "Erro ao processar verificação: {id}", verificacaoId);
 			return 0;
 		}
 	}
@@ -108,6 +112,10 @@ public class VerificacaoProcessorService : IVerificacaoProcessorService
 				TimeoutSegundos = consulta.TimeoutSegundos,
 				Prioridade = consulta.Prioridade,
 				Status = StatusExecucaoVerificacao.Pendente,
+				// Novos campos da Verificação
+				TipoApontamento = verificacao.IdTipo,
+				Nivel = verificacao.Nivel,
+				IdEmbaixadas = verificacao.IdEmbaixadas,
 				Metadata = new Dictionary<string, string>
 				{
 					["verificacaoNome"] = verificacao.NomeVerificacao,

@@ -18,5 +18,12 @@ public interface IDynamoDbService
     // Métodos específicos para Execucao
     Task<bool> SaveExecucaoAsync(Execucao execucao);
     Task<Execucao?> GetExecucaoAsync(string execucaoId);
+    
+    // Métodos específicos para ExecucaoVerificacao
+    Task<ExecucaoVerificacao?> GetExecucaoVerificacaoAsync(string execucaoVerificacaoId);
+    
+    // Métodos específicos para Verificacao
+    Task<List<Verificacao>> GetTodasVerificacoesAsync();
+    Task<List<Verificacao>> GetVerificacoesPorEmbaixadasAsync(List<string> idEmbaixadas);
 }
 

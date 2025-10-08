@@ -1,5 +1,6 @@
 using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.DataModel;
+using Amazon.DynamoDBv2.DocumentModel;
 using EmbaixadasWorkManager.Interfaces;
 using EmbaixadasWorkManager.Configuration;
 using EmbaixadasWorkManager.Models;
@@ -242,6 +243,103 @@ public class DynamoDbService : IDynamoDbService
         {
             _logger.LogError(ex, "Erro ao buscar execução: {ExecucaoId}", execucaoId);
             return null;
+        }
+    }
+
+    public async Task<ExecucaoVerificacao?> GetExecucaoVerificacaoAsync(string execucaoVerificacaoId)
+    {
+        try
+        {
+            _logger.LogDebug("Buscando ExecucaoVerificacao: {ExecucaoVerificacaoId}", execucaoVerificacaoId);
+            
+            var execucaoVerificacao = await _dynamoDbContext.LoadAsync<ExecucaoVerificacao>(execucaoVerificacaoId);
+            
+            if (execucaoVerificacao == null)
+            {
+                _logger.LogWarning("ExecucaoVerificacao não encontrada: {ExecucaoVerificacaoId}", execucaoVerificacaoId);
+            }
+            else
+            {
+                _logger.LogDebug("ExecucaoVerificacao encontrada: {ExecucaoVerificacaoId}", execucaoVerificacaoId);
+            }
+            
+            return execucaoVerificacao;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao buscar ExecucaoVerificacao: {ExecucaoVerificacaoId}", execucaoVerificacaoId);
+            return null;
+        }
+    }
+
+    public async Task<List<Verificacao>> GetTodasVerificacoesAsync()
+    {
+        try
+        {
+            _logger.LogDebug("Buscando todas as verificações");
+            
+            // Usar o método GetAllAsync que já existe
+            var todasVerificacoes = await GetAllAsync<Verificacao>();
+            var verificacoesList = todasVerificacoes.ToList();
+            
+            _logger.LogInformation("Encontradas {Count} verificações no total", verificacoesList.Count);
+            
+            return verificacoesList;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao buscar todas as verificações");
+            return new List<Verificacao>();
+        }
+    }
+
+    public async Task<List<Verificacao>> GetVerificacoesPorEmbaixadasAsync(List<string> idEmbaixadas)
+    {
+        try
+        {
+            _logger.LogInformation("Buscando verificações filtradas por {Count} embaixadas", idEmbaixadas.Count);
+            _logger.LogDebug("IDs de Embaixadas: {Embaixadas}", string.Join(", ", idEmbaixadas));
+            
+            // Buscar todas as verificações
+            var todasVerificacoes = await GetAllAsync<Verificacao>();
+            
+            // Filtrar verificações que têm pelo menos uma embaixada em comum com a lista fornecida
+            var verificacoesFiltradas = todasVerificacoes
+                .Where(v => v.IdEmbaixadas != null && 
+                           v.IdEmbaixadas.Any() && 
+                           v.IdEmbaixadas.Any(idEmb => idEmbaixadas.Contains(idEmb)))
+                .ToList();
+            
+            _logger.LogInformation("Encontradas {Count} verificações relacionadas às embaixadas especificadas (de {Total} verificações totais)", 
+                verificacoesFiltradas.Count, todasVerificacoes.Count());
+            
+            // Log detalhado das verificações encontradas
+            if (verificacoesFiltradas.Any())
+            {
+                _logger.LogDebug("Verificações encontradas:");
+                foreach (var verif in verificacoesFiltradas.Take(10)) // Mostrar apenas as primeiras 10
+                {
+                    var embaixadasComum = verif.IdEmbaixadas.Intersect(idEmbaixadas).ToList();
+                    _logger.LogDebug("- ID: {Id} | Nome: {Nome} | Embaixadas em comum: {Count}", 
+                        verif.Id, verif.NomeVerificacao, embaixadasComum.Count);
+                }
+                
+                if (verificacoesFiltradas.Count > 10)
+                {
+                    _logger.LogDebug("... e mais {Count} verificações", verificacoesFiltradas.Count - 10);
+                }
+            }
+            else
+            {
+                _logger.LogWarning("Nenhuma verificação encontrada para as embaixadas especificadas");
+            }
+            
+            return verificacoesFiltradas;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao buscar verificações por embaixadas");
+            return new List<Verificacao>();
         }
     }
 

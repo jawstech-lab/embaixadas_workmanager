@@ -8,15 +8,27 @@ namespace EmbaixadasWorkManager.Models;
 public class ProcessoMessage
 {
     /// <summary>
-    /// ID da execução
+    /// ID composto da ExecucaoVerificacao (execucaoId#verificacaoId)
     /// </summary>
-    [JsonPropertyName("execucaoId")]
-    public string ExecucaoId { get; set; } = string.Empty;
+    [JsonPropertyName("executionId")]
+    public string ExecucaoVerificacaoId { get; set; } = string.Empty;
 
     /// <summary>
     /// Indica se a verificação foi processada com sucesso
     /// </summary>
     [JsonPropertyName("isSuccess")]
     public bool IsSuccess { get; set; }
+
+    /// <summary>
+    /// Resultado da verificação
+    /// </summary>
+    [JsonPropertyName("resultado")]
+    public string? Resultado { get; set; }
+
+    /// <summary>
+    /// Timestamp do resultado
+    /// </summary>
+    [JsonPropertyName("timestamp")]
+    public DateTime Timestamp { get; set; } = DateTime.UtcNow;
 }
 
