@@ -39,7 +39,20 @@ TestResults/
 
 # Arquivos gerados por tooling
 .DS_Store
+WorkerProcess/.vs/*
+
+# Configurações sensíveis (não versionar)
 appsettings.development.json
 appsettings.Development.json
 appsettings.json
-WorkerProcess/.vs/*
+!appsettings.example.json
+!env.example
+
+# Scripts PowerShell (podem conter dados sensíveis)
+*.ps1
+!*.example.ps1
+
+# Documentação temporária ou sensível
+Context/DEBUG_*.md
+Context/PROBLEMA_*.md
+SECURITY_INCIDENT_*.md
