@@ -8,13 +8,19 @@ public class ProcessoProcessorService : IProcessoProcessorService
 {
     private readonly ILogger<ProcessoProcessorService> _logger;
     private readonly IDynamoDbService _dynamoDbService;
+    private readonly IPostProcessingPipeline _postProcessingPipeline;
+    private readonly IExecucaoEmpresaService _execucaoEmpresaService;
 
     public ProcessoProcessorService(
         ILogger<ProcessoProcessorService> logger,
-        IDynamoDbService dynamoDbService)
+        IDynamoDbService dynamoDbService,
+        IPostProcessingPipeline postProcessingPipeline,
+        IExecucaoEmpresaService execucaoEmpresaService)
     {
         _logger = logger;
         _dynamoDbService = dynamoDbService;
+        _postProcessingPipeline = postProcessingPipeline;
+        _execucaoEmpresaService = execucaoEmpresaService;
     }
 
     public async Task<bool> ProcessarMensagemProcessoAsync(string messageBody, string messageId)
@@ -96,7 +102,9 @@ public class ProcessoProcessorService : IProcessoProcessorService
             if (totalProcessadas >= execucao.QuantidadeVerificacoes)
             {
                 // Todas as verificações foram processadas
-                if (execucao.VerificacoesComErro == 0)
+                var finalizadaComSucesso = execucao.VerificacoesComErro == 0;
+                
+                if (finalizadaComSucesso)
                 {
                     execucao.Status = StatusExecucao.FinalizadaComSucesso;
                     _logger.LogInformation("Execução finalizada com sucesso: {ExecucaoId}. Total de apontamentos: {TotalApontamentos}", 
@@ -110,6 +118,12 @@ public class ProcessoProcessorService : IProcessoProcessorService
                 }
                 
                 execucao.DataFim = DateTime.UtcNow;
+
+                // NOVO: Atualizar status final nas tabelas de performance
+                await AtualizarTabelasPerformanceAsync(execucao);
+
+                // NOVO: Executar pipeline de pós-processamento
+                await ExecutarPosProcessamentoAsync(execucao, finalizadaComSucesso);
             }
             else
             {
@@ -150,6 +164,89 @@ public class ProcessoProcessorService : IProcessoProcessorService
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Atualiza status final nas tabelas de performance (ExecucaoResumoView e ExecucaoEmpresaStatus)
+    /// </summary>
+    private async Task AtualizarTabelasPerformanceAsync(Execucao execucao)
+    {
+        try
+        {
+            _logger.LogInformation(
+                "Atualizando status final nas tabelas de performance. " +
+                "ExecucaoId: {ExecucaoId}, Status: {Status}",
+                execucao.Id, execucao.Status);
+
+            await _execucaoEmpresaService.AtualizarStatusFinalAsync(
+                execucao.Id,
+                execucao.IdEmbaixadas,
+                execucao.Empresa,
+                execucao.Status);
+
+            _logger.LogInformation("Status final atualizado nas tabelas de performance");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, 
+                "Erro ao atualizar status final nas tabelas de performance. Continuando... ExecucaoId: {ExecucaoId}",
+                execucao.Id);
+            // Não propaga o erro
+        }
+    }
+
+    /// <summary>
+    /// Executa o pipeline de pós-processamento após finalização da execução
+    /// </summary>
+    private async Task ExecutarPosProcessamentoAsync(Execucao execucao, bool finalizadaComSucesso)
+    {
+        try
+        {
+            _logger.LogInformation("Iniciando pos-processamento para execucao {ExecucaoId}", execucao.Id);
+
+            // Criar contexto do pós-processamento
+            var context = new PostProcessingContext
+            {
+                Execucao = execucao,
+                FinalizadaComSucesso = finalizadaComSucesso,
+                Metadata = new Dictionary<string, object>
+                {
+                    { "TotalVerificacoes", execucao.QuantidadeVerificacoes },
+                    { "VerificacoesProcessadas", execucao.VerificacoesProcessadas },
+                    { "VerificacoesComErro", execucao.VerificacoesComErro },
+                    { "TotalApontamentos", execucao.TotalApontamentos }
+                }
+            };
+
+            // Executar pipeline
+            var resultado = await _postProcessingPipeline.ExecuteAsync(context);
+
+            if (resultado.Success)
+            {
+                _logger.LogInformation(
+                    "Pos-processamento concluido com sucesso para execucao {ExecucaoId}. " +
+                    "Steps executados: {Executed}, Tempo: {Time}ms",
+                    execucao.Id,
+                    resultado.TotalStepsExecuted,
+                    resultado.TotalExecutionTime.TotalMilliseconds);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Pos-processamento concluido com falhas para execucao {ExecucaoId}. " +
+                    "Steps executados: {Executed}, Falhas: {Failed}, Tempo: {Time}ms",
+                    execucao.Id,
+                    resultado.TotalStepsExecuted,
+                    resultado.TotalStepsFailed,
+                    resultado.TotalExecutionTime.TotalMilliseconds);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao executar pos-processamento para execucao {ExecucaoId}. Continuando...", 
+                execucao.Id);
+            // Não propaga o erro - pós-processamento não deve interromper o fluxo principal
+        }
     }
 }
 

@@ -41,6 +41,8 @@ public static class ServiceCollectionExtensions
             configuration.GetSection(DynamoDbConfiguration.SectionName));
         services.Configure<ProcessamentoConfiguration>(
             configuration.GetSection(ProcessamentoConfiguration.SectionName));
+        services.Configure<PostProcessingConfiguration>(
+            configuration.GetSection(PostProcessingConfiguration.SectionName));
 
         // Registrar configurações como singletons para injeção direta
         services.AddSingleton<SqsConfiguration>(provider =>
@@ -135,6 +137,15 @@ public static class ServiceCollectionExtensions
         // IExecucaoProcessoService removido - CONSOLIDADO
         services.AddSingleton<IProcessoProcessorService, ProcessoProcessorService>();
         services.AddSingleton<IQueryExecutionProcessorService, QueryExecutionProcessorService>();
+        
+        // Serviços de performance e auditoria
+        services.AddSingleton<IExecucaoEmpresaService, ExecucaoEmpresaService>();
+        
+        // Serviços de pós-processamento
+        services.AddSingleton<IPostProcessingPipeline, EmbaixadasWorkManager.Services.PostProcessing.PostProcessingPipeline>();
+        services.AddSingleton<IPostProcessingStep, EmbaixadasWorkManager.Services.PostProcessing.Steps.AgrupamentoStep>();
+        services.AddSingleton<IPostProcessingStep, EmbaixadasWorkManager.Services.PostProcessing.Steps.ExclusaoRegistrosStep>();
+        services.AddSingleton<IPostProcessingStep, EmbaixadasWorkManager.Services.PostProcessing.Steps.AgregacaoResultadosStep>();
         
         // Novos serviços especializados
         services.AddSingleton<IQueueHealthService, QueueHealthService>();

@@ -12,6 +12,7 @@ public class ProcessorService : IExecucaoProcessorService
     private readonly IDynamoDbService _dynamoDbService;
     private readonly IVerificacaoProcessorService _verificacaoProcessor;
     private readonly ISqsService _sqsService;
+    private readonly IExecucaoEmpresaService _execucaoEmpresaService;
     private readonly ProcessamentoConfiguration _processamentoConfig;
 
     public ProcessorService(
@@ -19,12 +20,14 @@ public class ProcessorService : IExecucaoProcessorService
         IDynamoDbService dynamoDbService,
         IVerificacaoProcessorService verificacaoProcessor,
         ISqsService sqsService,
+        IExecucaoEmpresaService execucaoEmpresaService,
         IOptions<ProcessamentoConfiguration> processamentoConfig)
     {
         _logger = logger;
         _dynamoDbService = dynamoDbService;
         _verificacaoProcessor = verificacaoProcessor;
         _sqsService = sqsService;
+        _execucaoEmpresaService = execucaoEmpresaService;
         _processamentoConfig = processamentoConfig.Value;
     }
 
@@ -50,6 +53,23 @@ public class ProcessorService : IExecucaoProcessorService
             {
                 _logger.LogError("Execução não encontrada no DynamoDB: {ExecucaoId}", execucaoId);
                 return false;
+            }
+
+            // NOVO: Gravar nas tabelas de performance por embaixada e empresa
+            // Executa logo após buscar a execução para registrar início do processamento
+            try
+            {
+                await _execucaoEmpresaService.GravarExecucaoPorEmbaixadasEEmpresasAsync(
+                    execucao.Id,
+                    execucao.IdEmbaixadas,
+                    execucao.Empresa,
+                    execucao.DataSolicitacao,
+                    execucao.Status);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao gravar execucao por embaixadas e empresas. Continuando processamento. ExecucaoId: {ExecucaoId}", execucaoId);
+                // Não interrompe o processamento se falhar a gravação nas tabelas de performance
             }
 
             // Verificar se a execução já foi processada
@@ -203,6 +223,58 @@ public class ProcessorService : IExecucaoProcessorService
             {
                 _logger.LogWarning("Execução sem validações e busca automática desabilitada. Nenhuma verificação será processada.");
                 validacoesParaProcessar = new List<string>();
+            }
+
+            // ✅ NOVO: Se não há verificações, finalizar imediatamente
+            if (validacoesParaProcessar.Count == 0)
+            {
+                _logger.LogWarning("Nenhuma verificação para processar. Finalizando execução imediatamente: {ExecucaoId}", execucao.Id);
+                
+                // Atualizar execução como concluída (0 verificações)
+                execucao.QuantidadeVerificacoes = 0;
+                execucao.VerificacoesProcessadas = 0;
+                execucao.VerificacoesComErro = 0;
+                execucao.TotalApontamentos = 0;
+                execucao.Status = StatusExecucao.FinalizadaComSucesso;
+                execucao.DataFim = DateTime.UtcNow;
+                
+                await _dynamoDbService.UpdateAsync(execucao);
+                
+                // Atualizar tabelas de performance com status final
+                try
+                {
+                    await _execucaoEmpresaService.AtualizarStatusFinalAsync(
+                        execucao.Id,
+                        execucao.IdEmbaixadas ?? new List<string>(),
+                        execucao.Empresa,
+                        execucao.Status);
+                    
+                    _logger.LogInformation("Status final atualizado nas tabelas de performance (0 verificações)");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Erro ao atualizar tabelas de performance. Continuando...");
+                }
+                
+                var resultSemVerificacoes = new
+                {
+                    ExecucaoId = execucao.Id,
+                    ValidacoesProcessadas = 0,
+                    QueriesEnviadas = 0,
+                    ProcessadoEm = DateTime.UtcNow,
+                    Status = "Finalizado sem verificações"
+                };
+
+                _logger.LogInformation("Execução finalizada (sem verificações): {ExecucaoId}", execucao.Id);
+
+                return new ProcessResult
+                {
+                    Success = true,
+                    Result = System.Text.Json.JsonSerializer.Serialize(resultSemVerificacoes),
+                    Error = null,
+                    ValidacoesProcessadas = 0,
+                    QueriesEnviadas = 0
+                };
             }
 
             // Iterar sobre cada validação, delegando ao VerificacaoProcessor
