@@ -114,6 +114,12 @@ public class ResultadoAgregado
     public int Nivel { get; set; }
 
     /// <summary>
+    /// Descrição do erro (exemplo de um dos erros deste grupo)
+    /// </summary>
+    [DynamoDBProperty("DescricaoErro")]
+    public string DescricaoErro { get; set; } = string.Empty;
+
+    /// <summary>
     /// Data de criação do registro agregado
     /// </summary>
     [DynamoDBProperty("DataCriacao")]

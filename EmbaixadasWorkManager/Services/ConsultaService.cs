@@ -127,12 +127,15 @@ public class ConsultaService : IConsultaService
 					continue;
 				}
 
-				var valorSubstituicao = FormatarValorParametroPorTipoCodigo(valorParametro.ValorParametro, parametro.TipoValor);
+				// IMPORTANTE: Usar FormatarParametroComContexto para detectar se é identificador ou valor
+				// Isso garante que schemas/tabelas não recebam aspas simples
+				var valorSubstituicao = FormatarParametroComContexto(sqlProcessado, alias, valorParametro.ValorParametro);
 
 				// Substituição global e case-insensitive
 				sqlProcessado = Regex.Replace(sqlProcessado, padrao, valorSubstituicao, RegexOptions.IgnoreCase);
 
-				_logger.LogDebug("Substituído parâmetro da verificação {Padrao} por {Valor} (ParametroId={ParametroId}, Alias={Alias})", padrao, valorSubstituicao, parametro.Id, alias);
+				var contexto = DeterminarContextoParametro(sqlProcessado, alias) ? "identifier" : "value";
+				_logger.LogDebug("Substituído parâmetro da verificação {Padrao} por {Valor} (ParametroId={ParametroId}, Alias={Alias}, Contexto={Contexto})", padrao, valorSubstituicao, parametro.Id, alias, contexto);
 			}
 
 			_logger.LogInformation("Consulta processada com sucesso.");
@@ -173,15 +176,69 @@ public class ConsultaService : IConsultaService
 		foreach (Match match in matches)
 		{
 			var posicao = match.Index;
+			var tamanhoMatch = match.Length; // Usar o tamanho real do match
 			
-			// Analisar o contexto antes e depois do parâmetro
-			if (EhContextoDeValor(sql, posicao, padrao.Length))
+			// PRIMEIRO: Verificar se está em contexto de identificador (schema, tabela, coluna)
+			if (EhContextoDeIdentificador(sql, posicao, tamanhoMatch, padrao))
+			{
+				return true; // É um identificador (sem aspas)
+			}
+			
+			// SEGUNDO: Verificar se está em contexto de valor
+			if (EhContextoDeValor(sql, posicao, tamanhoMatch))
 			{
 				return false; // É um valor (precisa de aspas)
 			}
 		}
 		
+		// Por padrão, se não detectar contexto claro, assumir que é identificador
+		// (mais seguro para schemas, tabelas e colunas)
 		return true; // É um identificador (sem aspas)
+	}
+
+	private bool EhContextoDeIdentificador(string sql, int posicaoParametro, int tamanhoParametro, string padraoRegex)
+	{
+		// Palavras-chave SQL que indicam que o próximo token é um identificador (schema, tabela, coluna)
+		var palavrasChaveIdentificador = new[]
+		{
+			"FROM", "JOIN", "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "FULL JOIN",
+			"INTO", "UPDATE", "TABLE", "SCHEMA", "DATABASE", "INDEX",
+			"ON", "USING", "SET", "AS", "ALIAS"
+		};
+		
+		// Pegar contexto antes do parâmetro (últimas 50 caracteres)
+		var inicioContexto = Math.Max(0, posicaoParametro - 50);
+		var contextoAnterior = sql.Substring(inicioContexto, posicaoParametro - inicioContexto);
+		
+		// Verificar se há uma palavra-chave de identificador antes do parâmetro
+		foreach (var palavraChave in palavrasChaveIdentificador)
+		{
+			var padrao = $@"\b{Regex.Escape(palavraChave)}\s+[^@]*$";
+			if (Regex.IsMatch(contextoAnterior, padrao, RegexOptions.IgnoreCase))
+			{
+				_logger.LogDebug("Palavra-chave de identificador '{PalavraChave}' encontrada - É IDENTIFICADOR", palavraChave);
+				return true; // É um identificador
+			}
+		}
+		
+		// Verificar se o parâmetro está ANTES de um ponto (schema.tabela ou tabela.coluna)
+		// tamanhoParametro já é o tamanho real do match
+		var posicaoDepois = posicaoParametro + tamanhoParametro;
+		if (posicaoDepois < sql.Length && sql[posicaoDepois] == '.')
+		{
+			_logger.LogDebug("Parâmetro seguido por ponto (.) - É IDENTIFICADOR (schema/tabela). Posição: {Posicao}, Tamanho: {Tamanho}, Posição depois: {PosicaoDepois}, Caractere: '{Caractere}'", 
+				posicaoParametro, tamanhoParametro, posicaoDepois, posicaoDepois < sql.Length ? sql[posicaoDepois].ToString() : "EOF");
+			return true; // É um identificador (schema ou tabela)
+		}
+		
+		// Verificar se o parâmetro está DEPOIS de um ponto (schema.tabela ou tabela.coluna)
+		if (posicaoParametro > 0 && sql[posicaoParametro - 1] == '.')
+		{
+			_logger.LogDebug("Parâmetro precedido por ponto (.) - É IDENTIFICADOR (tabela/coluna)");
+			return true; // É um identificador (tabela ou coluna)
+		}
+		
+		return false; // Não é claramente um identificador
 	}
 
 	private bool EhContextoDeValor(string sql, int posicaoParametro, int tamanhoParametro)

@@ -34,6 +34,10 @@ public class DynamoDbConfiguration
     public string TableNameExecucaoVerificacao { get; set; } = "ExecucaoVerificacao";
     // TableNameExecucaoProcesso removido - CONSOLIDADO
     
+    // Tabelas de consultas e parâmetros
+    public string TableNameConsulta { get; set; } = "Consultas";
+    public string TableNameParametro { get; set; } = "Parametros";
+    
     // Novas tabelas para performance e auditoria por empresa
     public string TableNameExecucaoResumoView { get; set; } = "ExecucaoResumoView";
     public string TableNameExecucaoEmpresaStatus { get; set; } = "ExecucaoEmpresaStatus";
@@ -41,6 +45,9 @@ public class DynamoDbConfiguration
     // Tabelas para agregação de resultados
     public string TableNameResultado { get; set; } = "Resultado";
     public string TableNameResultadoAgregado { get; set; } = "ResultadoAgregado";
+    
+    // Tabela de justificativas
+    public string TableNameJustificativa { get; set; } = "Justificativas";
     
     public string ServiceUrl { get; set; } = string.Empty;
     public bool UseLocalStack { get; set; } = false;

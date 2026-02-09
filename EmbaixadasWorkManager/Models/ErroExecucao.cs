@@ -20,6 +20,18 @@ public class ErroExecucao
     public string VerificacaoId { get; set; } = string.Empty;
 
     /// <summary>
+    /// Nome da Verificação
+    /// </summary>
+    [DynamoDBProperty("NomeVerificacao")]
+    public string NomeVerificacao { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Identificador da Consulta
+    /// </summary>
+    [DynamoDBProperty("IdentificadorConsulta")]
+    public string IdentificadorConsulta { get; set; } = string.Empty;
+
+    /// <summary>
     /// SQL processado que foi executado
     /// </summary>
     [DynamoDBProperty("Sql")]
@@ -49,6 +61,9 @@ public class ErroExecucao
     [DynamoDBProperty("OccurredAt")]
     public DateTime OccurredAt { get; set; } = DateTime.UtcNow;
 }
+
+
+
 
 
 

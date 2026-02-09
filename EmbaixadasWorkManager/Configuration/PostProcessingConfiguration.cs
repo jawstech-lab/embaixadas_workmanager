@@ -36,6 +36,11 @@ public class PostProcessingConfiguration
     /// Configuração do step de agregação de resultados
     /// </summary>
     public AgregacaoResultadosStepConfiguration AgregacaoResultados { get; set; } = new();
+
+    /// <summary>
+    /// Configuração do step de processamento de justificativas
+    /// </summary>
+    public ProcessamentoJustificativasStepConfiguration ProcessamentoJustificativas { get; set; } = new();
 }
 
 /// <summary>
@@ -124,5 +129,37 @@ public class AgregacaoResultadosStepConfiguration
     /// Indica se deve atualizar o TotalApontamentos na ExecucaoResumoView
     /// </summary>
     public bool AtualizarResumoView { get; set; } = true;
+}
+
+/// <summary>
+/// Configuração do step de processamento de justificativas
+/// </summary>
+public class ProcessamentoJustificativasStepConfiguration
+{
+    /// <summary>
+    /// Habilita/desabilita o step de processamento de justificativas
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Ordem de execução do step (ANTES da agregação)
+    /// </summary>
+    public int Order { get; set; } = 5;
+
+    /// <summary>
+    /// Timeout para este step (em segundos)
+    /// </summary>
+    public int TimeoutSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Batch size para deleção de registros
+    /// </summary>
+    public int BatchSize { get; set; } = 25;
+
+    /// <summary>
+    /// Se true: usa filtro completo (Verificacao + Empresa + Tabela + Campo)
+    /// Se false: usa apenas VerificacaoId
+    /// </summary>
+    public bool UsarFiltroCompleto { get; set; } = true;
 }
 

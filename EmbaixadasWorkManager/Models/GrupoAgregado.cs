@@ -9,6 +9,7 @@ public class GrupoAgregadoSegmentado
     public ChaveAgrupamento Chave { get; set; } = null!;
     public int Quantidade { get; set; }
     public HashSet<string> IdEmbaixadas { get; set; } = new();
+    public string DescricaoErro { get; set; } = string.Empty;  // Primeira descrição do grupo
 
     public GrupoAgregadoSegmentado()
     {
@@ -19,6 +20,7 @@ public class GrupoAgregadoSegmentado
         Chave = chave;
         Quantidade = 0;
         IdEmbaixadas = new HashSet<string>();
+        DescricaoErro = string.Empty;
     }
 }
 
@@ -30,6 +32,7 @@ public class GrupoAgregadoGlobal
 {
     public ChaveAgrupamento Chave { get; set; } = null!;
     public int Quantidade { get; set; }
+    public string DescricaoErro { get; set; } = string.Empty;  // Primeira descrição do grupo
 
     public GrupoAgregadoGlobal()
     {
@@ -39,6 +42,7 @@ public class GrupoAgregadoGlobal
     {
         Chave = chave;
         Quantidade = 0;
+        DescricaoErro = string.Empty;
     }
 }
 

@@ -26,70 +26,120 @@ public class VerificacaoProcessorService : IVerificacaoProcessorService
 		_sqsConfiguration = sqsConfiguration;
 	}
 
-	public async Task<int> ProcessarVerificacaoAsync(Execucao execucao, string verificacaoId)
+	public async Task<(int queriesEnviadas, ErroExecucao? erro)> ProcessarVerificacaoAsync(Execucao execucao, string verificacaoId)
 	{
+		_logger.LogInformation("=== INICIO Processamento Verificacao: {VerificacaoId} para Execucao: {ExecucaoId} ===", verificacaoId, execucao.Id);
+		
+		Verificacao? verificacao = null;
+		Consulta? consulta = null;
 		
 		try
 		{
-			_logger.LogInformation("Processando verificação: {VerificacaoId} para execução {ExecucaoId}", verificacaoId, execucao.Id);
-
 			// Carregar verificação
-			var verificacao = await _dynamoDbService.GetAsync<Verificacao>(verificacaoId);
+			_logger.LogDebug("ETAPA 1/5: Buscando Verificacao no DynamoDB. VerificacaoId: {VerificacaoId}", verificacaoId);
+			verificacao = await _dynamoDbService.GetAsync<Verificacao>(verificacaoId);
 			if (verificacao == null)
 			{
-				_logger.LogWarning("Validação não encontrada: {VerificacaoId}", verificacaoId);
-				return 0;
+				_logger.LogWarning("ETAPA 1/5: FALHA - Validação não encontrada no DynamoDB: {VerificacaoId}", verificacaoId);
+				var erro = new ErroExecucao
+				{
+					VerificacaoId = verificacaoId,
+					ErrorCode = "VERIFICACAO_NAO_ENCONTRADA",
+					Message = $"Verificação com ID {verificacaoId} não encontrada no DynamoDB.",
+					OccurredAt = DateTime.UtcNow
+				};
+				return (0, erro);
 			}
+			_logger.LogDebug("ETAPA 1/5: SUCESSO - Verificacao encontrada: {NomeVerificacao}", verificacao.NomeVerificacao);
 
 			// Buscar consulta relacionada usando o serviço de consultas
-			var consulta = await _consultaService.GetConsultaAsync(verificacao.IdConsulta);
+			_logger.LogDebug("ETAPA 2/5: Buscando Consulta no DynamoDB. IdConsulta: {IdConsulta}", verificacao.IdConsulta);
+			consulta = await _consultaService.GetConsultaAsync(verificacao.IdConsulta);
 			if (consulta == null)
 			{
-				_logger.LogWarning("Consulta não encontrada para verificação: {VerificacaoId}, IdConsulta: {IdConsulta}", 
+				_logger.LogWarning("ETAPA 2/5: FALHA - Consulta não encontrada. VerificacaoId: {VerificacaoId}, IdConsulta: {IdConsulta}", 
 					verificacaoId, verificacao.IdConsulta);
-				return 0;
+				var erro = new ErroExecucao
+				{
+					VerificacaoId = verificacaoId,
+					NomeVerificacao = verificacao.NomeVerificacao,
+					ErrorCode = "CONSULTA_NAO_ENCONTRADA",
+					Message = $"Consulta com ID {verificacao.IdConsulta} não encontrada no DynamoDB para a Verificação '{verificacao.NomeVerificacao}' ({verificacaoId}).",
+					OccurredAt = DateTime.UtcNow
+				};
+				return (0, erro);
 			}
-
-			_logger.LogInformation("Processando consulta: {IdConsulta} - {Identificador}", consulta.Id, consulta.Identificador);
+			_logger.LogDebug("ETAPA 2/5: SUCESSO - Consulta encontrada: {IdConsulta} - {Identificador}", consulta.Id, consulta.Identificador);
 
 			// Processar consulta com substituição de parâmetros (verificação + execução)
+			_logger.LogDebug("ETAPA 3/5: Processando SQL com substituicao de parametros");
 			var sqlProcessado = await _consultaService.ProcessarConsultaComParametrosAsync(
 				consulta.QuerySql, 
 				verificacao.ValoresParametros,
 				execucao.ParametrosExecucao);
 
-			_logger.LogInformation("SQL processado com parâmetros: {SqlProcessado}", sqlProcessado);
+			_logger.LogDebug("ETAPA 3/5: SUCESSO - SQL processado: {SqlProcessado}", sqlProcessado);
 
 			// NOVA ARQUITETURA: Criar/atualizar ExecucaoVerificacao
+			_logger.LogDebug("ETAPA 4/5: Criando/Atualizando ExecucaoVerificacao no DynamoDB");
 			var execucaoVerificacao = await CriarOuAtualizarExecucaoVerificacaoAsync(
 				execucao, verificacao, consulta, sqlProcessado);
 
 			if (execucaoVerificacao == null)
 			{
-				_logger.LogError("Falha ao criar ExecucaoVerificacao para: {ExecucaoId}#{VerificacaoId}", execucao.Id, verificacao.Id);
-				return 0;
+				_logger.LogError("ETAPA 4/5: FALHA - Falha ao criar ExecucaoVerificacao. ExecucaoId: {ExecucaoId}, VerificacaoId: {VerificacaoId}", execucao.Id, verificacao.Id);
+				var erro = new ErroExecucao
+				{
+					VerificacaoId = verificacaoId,
+					NomeVerificacao = verificacao.NomeVerificacao,
+					IdentificadorConsulta = consulta.Identificador,
+					ErrorCode = "EXECUCAO_VERIFICACAO_NAO_CRIADA",
+					Message = $"Falha ao criar ExecucaoVerificacao para Execucao {execucao.Id} e Verificação '{verificacao.NomeVerificacao}' ({verificacaoId}).",
+					OccurredAt = DateTime.UtcNow
+				};
+				return (0, erro);
 			}
+			_logger.LogDebug("ETAPA 4/5: SUCESSO - ExecucaoVerificacao criada: {ExecucaoVerificacaoId}", execucaoVerificacao.Id);
 
 			var id = execucaoVerificacao.Id;
 
 			// Enviar APENAS o ID para a fila (nova arquitetura)
+			_logger.LogDebug("ETAPA 5/5: Enviando QueryExecutionMessage para fila SQS");
 			var enviada = await EnviarQueryExecutionAsync(id);
 			
 			if (enviada)
 			{
-				_logger.LogDebug("Query execution enviada para fila: {id}", id);
-				return 1;
+				_logger.LogInformation("=== SUCESSO TOTAL - Verificacao {VerificacaoId} processada e enviada para fila ===", verificacaoId);
+				return (1, null);
 			}
 			else
 			{
-				_logger.LogError("Falha ao enviar query execution: {id}", id);
-				return 0;
+				_logger.LogError("=== FALHA - Verificacao {VerificacaoId} processada mas NAO enviada para fila ===", verificacaoId);
+				var erro = new ErroExecucao
+				{
+					VerificacaoId = verificacaoId,
+					NomeVerificacao = verificacao.NomeVerificacao,
+					IdentificadorConsulta = consulta.Identificador,
+					ErrorCode = "ENVIO_SQS_FALHOU",
+					Message = $"Falha ao enviar mensagem para a fila SQS. Verificação '{verificacao.NomeVerificacao}' ({verificacaoId}). ExecucaoVerificacaoId: {id}",
+					OccurredAt = DateTime.UtcNow
+				};
+				return (0, erro);
 			}
 		}
 		catch (Exception ex)
 		{
-			_logger.LogError(ex, "Erro ao processar verificação: {id}", verificacaoId);
-			return 0;
+			_logger.LogError(ex, "=== EXCEPTION - Erro ao processar verificacao: {VerificacaoId}. Mensagem: {Message} ===", verificacaoId, ex.Message);
+			var erro = new ErroExecucao
+			{
+				VerificacaoId = verificacaoId,
+				NomeVerificacao = verificacao?.NomeVerificacao ?? string.Empty,
+				IdentificadorConsulta = consulta?.Identificador ?? string.Empty,
+				ErrorCode = "EXCEPTION",
+				Message = $"Exceção ao processar verificação: {ex.Message}",
+				OccurredAt = DateTime.UtcNow
+			};
+			return (0, erro);
 		}
 	}
 

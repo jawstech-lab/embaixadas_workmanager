@@ -1,6 +1,8 @@
+using System.Reflection;
 using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.DataModel;
 using Amazon.DynamoDBv2.DocumentModel;
+using Amazon.DynamoDBv2.Model;
 using EmbaixadasWorkManager.Interfaces;
 using EmbaixadasWorkManager.Configuration;
 using EmbaixadasWorkManager.Models;
@@ -26,15 +28,127 @@ public class DynamoDbService : IDynamoDbService
         _config = config.Value;
         _logger = logger;
     }
+    
+    /// <summary>
+    /// Obtém o nome da tabela configurada para um tipo específico.
+    /// Retorna null se o tipo não tiver configuração (usa o nome do atributo [DynamoDBTable]).
+    /// </summary>
+    private string? GetTableNameForType(Type type)
+    {
+        if (type == typeof(Execucao))
+            return _config.TableNameExecucao;
+        if (type == typeof(Verificacao))
+            return _config.TableNameVerificacao;
+        if (type == typeof(ExecucaoVerificacao))
+            return _config.TableNameExecucaoVerificacao;
+        if (type == typeof(Consulta))
+            return _config.TableNameConsulta;
+        if (type == typeof(Parametro))
+            return _config.TableNameParametro;
+        if (type == typeof(ExecucaoResumoView))
+            return _config.TableNameExecucaoResumoView;
+        if (type == typeof(ExecucaoEmpresaStatus))
+            return _config.TableNameExecucaoEmpresaStatus;
+        if (type == typeof(Resultado))
+            return _config.TableNameResultado;
+        if (type == typeof(ResultadoAgregado))
+            return _config.TableNameResultadoAgregado;
+        if (type == typeof(Justificativa))
+            return _config.TableNameJustificativa;
+        
+        return null; // Usa o nome do atributo [DynamoDBTable]
+    }
+    
+    /// <summary>
+    /// Obtém o nome do atributo hash key de um tipo usando reflection
+    /// </summary>
+    private string? GetHashKeyName(Type type)
+    {
+        var hashKeyProp = type.GetProperties()
+            .FirstOrDefault(p => p.GetCustomAttributes(typeof(DynamoDBHashKeyAttribute), false).Any());
+        
+        if (hashKeyProp == null)
+            return null;
+        
+        var hashKeyAttr = hashKeyProp.GetCustomAttributes(typeof(DynamoDBHashKeyAttribute), false)
+            .Cast<DynamoDBHashKeyAttribute>()
+            .FirstOrDefault();
+        
+        return hashKeyAttr?.AttributeName ?? hashKeyProp.Name;
+    }
+    
+    /// <summary>
+    /// Obtém o nome do atributo range key de um tipo usando reflection
+    /// </summary>
+    private string? GetRangeKeyName(Type type)
+    {
+        var rangeKeyProp = type.GetProperties()
+            .FirstOrDefault(p => p.GetCustomAttributes(typeof(DynamoDBRangeKeyAttribute), false).Any());
+        
+        if (rangeKeyProp == null)
+            return null;
+        
+        var rangeKeyAttr = rangeKeyProp.GetCustomAttributes(typeof(DynamoDBRangeKeyAttribute), false)
+            .Cast<DynamoDBRangeKeyAttribute>()
+            .FirstOrDefault();
+        
+        return rangeKeyAttr?.AttributeName ?? rangeKeyProp.Name;
+    }
 
     public async Task<T?> GetAsync<T>(string id) where T : class
     {
         try
         {
+            // Interceptar chamadas para Execucao e usar o método específico que usa o nome de tabela correto
+            if (typeof(T) == typeof(Execucao))
+            {
+                _logger.LogDebug("INTERCEPTADO: GetAsync<Execucao> redirecionado para GetExecucaoAsync. ID: {Id}", id);
+                var execucao = await GetExecucaoAsync(id);
+                return execucao as T;
+            }
+            
+            // Interceptar tipos que têm configuração de tabela
+            var tableName = GetTableNameForType(typeof(T));
+            if (tableName != null)
+            {
+                _logger.LogDebug("INTERCEPTADO: GetAsync<{Type}> usando tabela configurada: {TableName}. ID: {Id}", typeof(T).Name, tableName, id);
+                
+                var hashKeyName = GetHashKeyName(typeof(T));
+                if (hashKeyName == null)
+                {
+                    _logger.LogError("Tipo {Type} não possui atributo DynamoDBHashKey", typeof(T).Name);
+                    throw new InvalidOperationException($"Tipo {typeof(T).Name} não possui atributo DynamoDBHashKey");
+                }
+                
+                var request = new GetItemRequest
+                {
+                    TableName = tableName,
+                    Key = new Dictionary<string, AttributeValue>
+                    {
+                        { hashKeyName, new AttributeValue { S = id } }
+                    }
+                };
+                
+                var response = await _dynamoDbClient.GetItemAsync(request);
+                
+                if (response.Item == null || response.Item.Count == 0)
+                {
+                    _logger.LogDebug("Item não encontrado: {Type} com ID: {Id}", typeof(T).Name, id);
+                    return null;
+                }
+                
+                // Converter AttributeValue para objeto T usando DynamoDBContext
+                var doc = Document.FromAttributeMap(response.Item);
+                var result = _dynamoDbContext.FromDocument<T>(doc);
+                
+                _logger.LogDebug("Item encontrado: {Found}", result != null);
+                return result;
+            }
+            
             _logger.LogDebug("Buscando item do tipo {Type} com ID: {Id}", typeof(T).Name, id);
-            var result = await _dynamoDbContext.LoadAsync<T>(id);
-            _logger.LogDebug("Item encontrado: {Found}", result != null);
-            return result;
+            var result2 = await _dynamoDbContext.LoadAsync<T>(id);
+            _logger.LogDebug("Item encontrado: {Found}", result2 != null);
+            return result2;
         }
         catch (Exception ex)
         {
@@ -47,11 +161,52 @@ public class DynamoDbService : IDynamoDbService
     {
         try
         {
+            // Interceptar tipos que têm configuração de tabela
+            var tableName = GetTableNameForType(typeof(T));
+            if (tableName != null)
+            {
+                _logger.LogDebug("INTERCEPTADO: GetAsync<{Type}> usando tabela configurada: {TableName}. HashKey: {HashKey}, RangeKey: {RangeKey}", 
+                    typeof(T).Name, tableName, hashKey, rangeKey);
+                
+                var hashKeyName = GetHashKeyName(typeof(T));
+                var rangeKeyName = GetRangeKeyName(typeof(T));
+                
+                if (hashKeyName == null || rangeKeyName == null)
+                {
+                    _logger.LogError("Tipo {Type} não possui atributos DynamoDBHashKey ou DynamoDBRangeKey", typeof(T).Name);
+                    throw new InvalidOperationException($"Tipo {typeof(T).Name} não possui atributos de chave necessários");
+                }
+                
+                var request = new GetItemRequest
+                {
+                    TableName = tableName,
+                    Key = new Dictionary<string, AttributeValue>
+                    {
+                        { hashKeyName, new AttributeValue { S = hashKey } },
+                        { rangeKeyName, new AttributeValue { S = rangeKey } }
+                    }
+                };
+                
+                var response = await _dynamoDbClient.GetItemAsync(request);
+                
+                if (response.Item == null || response.Item.Count == 0)
+                {
+                    _logger.LogDebug("Item não encontrado: {Type} com HashKey: {HashKey}, RangeKey: {RangeKey}", typeof(T).Name, hashKey, rangeKey);
+                    return null;
+                }
+                
+                var doc = Document.FromAttributeMap(response.Item);
+                var result = _dynamoDbContext.FromDocument<T>(doc);
+                
+                _logger.LogDebug("Item encontrado: {Found}", result != null);
+                return result;
+            }
+            
             _logger.LogDebug("Buscando item do tipo {Type} com HashKey: {HashKey}, RangeKey: {RangeKey}", 
                 typeof(T).Name, hashKey, rangeKey);
-            var result = await _dynamoDbContext.LoadAsync<T>(hashKey, rangeKey);
-            _logger.LogDebug("Item encontrado: {Found}", result != null);
-            return result;
+            var result2 = await _dynamoDbContext.LoadAsync<T>(hashKey, rangeKey);
+            _logger.LogDebug("Item encontrado: {Found}", result2 != null);
+            return result2;
         }
         catch (Exception ex)
         {
@@ -65,6 +220,41 @@ public class DynamoDbService : IDynamoDbService
     {
         try
         {
+            // Interceptar tipos que têm configuração de tabela
+            var tableName = GetTableNameForType(typeof(T));
+            if (tableName != null)
+            {
+                _logger.LogDebug("INTERCEPTADO: GetAllAsync<{Type}> usando tabela configurada: {TableName}", typeof(T).Name, tableName);
+                
+                var request = new ScanRequest
+                {
+                    TableName = tableName
+                };
+                
+                var items = new List<T>();
+                Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
+                
+                do
+                {
+                    request.ExclusiveStartKey = lastEvaluatedKey;
+                    var response = await _dynamoDbClient.ScanAsync(request);
+                    
+                    foreach (var item in response.Items)
+                    {
+                        // Converter AttributeValue para objeto T usando DynamoDBContext
+                        var doc = Document.FromAttributeMap(item);
+                        var obj = _dynamoDbContext.FromDocument<T>(doc);
+                        if (obj != null)
+                            items.Add(obj);
+                    }
+                    
+                    lastEvaluatedKey = response.LastEvaluatedKey;
+                } while (lastEvaluatedKey != null && lastEvaluatedKey.Count > 0);
+                
+                _logger.LogDebug("Encontrados {Count} itens do tipo {Type}", items.Count, typeof(T).Name);
+                return items;
+            }
+            
             _logger.LogDebug("Buscando todos os itens do tipo {Type}", typeof(T).Name);
             var scanConditions = new List<ScanCondition>();
             var result = await _dynamoDbContext.ScanAsync<T>(scanConditions).GetRemainingAsync();
@@ -105,6 +295,36 @@ public class DynamoDbService : IDynamoDbService
     {
         try
         {
+            // Interceptar chamadas para Execucao e usar o método específico que usa o nome de tabela correto
+            if (typeof(T) == typeof(Execucao) && item is Execucao execucao)
+            {
+                _logger.LogDebug("INTERCEPTADO: SaveAsync<Execucao> redirecionado para SaveExecucaoAsync");
+                await SaveExecucaoAsync(execucao);
+                return;
+            }
+            
+            // Interceptar outros tipos que têm configuração de tabela
+            var tableName = GetTableNameForType(typeof(T));
+            if (tableName != null)
+            {
+                _logger.LogDebug("INTERCEPTADO: SaveAsync<{Type}> usando tabela configurada: {TableName}", typeof(T).Name, tableName);
+                
+                // Converter objeto para Document e depois para Dictionary<string, AttributeValue>
+                var doc = _dynamoDbContext.ToDocument<T>(item);
+                var itemDict = doc.ToAttributeMap();
+                
+                // Usar PutItemAsync para criar/atualizar
+                var putRequest = new PutItemRequest
+                {
+                    TableName = tableName,
+                    Item = itemDict
+                };
+                
+                await _dynamoDbClient.PutItemAsync(putRequest);
+                _logger.LogDebug("Item salvo com sucesso");
+                return;
+            }
+            
             _logger.LogDebug("Salvando item do tipo {Type}", typeof(T).Name);
             await _dynamoDbContext.SaveAsync(item);
             _logger.LogDebug("Item salvo com sucesso");
@@ -120,6 +340,70 @@ public class DynamoDbService : IDynamoDbService
     {
         try
         {
+            // Interceptar chamadas para Execucao e usar o método específico que usa o nome de tabela correto
+            if (typeof(T) == typeof(Execucao) && item is Execucao execucao)
+            {
+                _logger.LogDebug("INTERCEPTADO: UpdateAsync<Execucao> redirecionado para SaveExecucaoAsync");
+                await SaveExecucaoAsync(execucao);
+                return;
+            }
+            
+            // Interceptar outros tipos que têm configuração de tabela
+            var tableName = GetTableNameForType(typeof(T));
+            if (tableName != null)
+            {
+                _logger.LogDebug("INTERCEPTADO: UpdateAsync<{Type}> usando tabela configurada: {TableName}", typeof(T).Name, tableName);
+                
+                // Converter objeto para Document e depois para Dictionary<string, AttributeValue>
+                var doc = _dynamoDbContext.ToDocument<T>(item);
+                var itemDict = doc.ToAttributeMap();
+                
+                // Obter chave primária
+                var hashKeyName = GetHashKeyName(typeof(T));
+                if (hashKeyName == null)
+                {
+                    _logger.LogError("Tipo {Type} não possui atributo DynamoDBHashKey", typeof(T).Name);
+                    throw new InvalidOperationException($"Tipo {typeof(T).Name} não possui atributo DynamoDBHashKey");
+                }
+                
+                var hashKeyValue = itemDict.ContainsKey(hashKeyName) ? itemDict[hashKeyName] : null;
+                if (hashKeyValue == null)
+                {
+                    _logger.LogError("Chave primária vazia para tipo {Type}", typeof(T).Name);
+                    throw new InvalidOperationException($"Chave primária vazia para tipo {typeof(T).Name}");
+                }
+                
+                // Remover chave primária do update (não pode ser atualizada)
+                var updateItem = itemDict.Where(kvp => kvp.Key != hashKeyName).ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+                
+                // Preparar chave completa (pode ter range key também)
+                var key = new Dictionary<string, AttributeValue> { { hashKeyName, hashKeyValue } };
+                var rangeKeyName = GetRangeKeyName(typeof(T));
+                if (rangeKeyName != null && itemDict.ContainsKey(rangeKeyName))
+                {
+                    key[rangeKeyName] = itemDict[rangeKeyName];
+                    updateItem = updateItem.Where(kvp => kvp.Key != rangeKeyName).ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+                }
+                
+                var updateRequest = new UpdateItemRequest
+                {
+                    TableName = tableName,
+                    Key = key,
+                    AttributeUpdates = updateItem.ToDictionary(
+                        kvp => kvp.Key,
+                        kvp => new AttributeValueUpdate
+                        {
+                            Action = AttributeAction.PUT,
+                            Value = kvp.Value
+                        }
+                    )
+                };
+                
+                await _dynamoDbClient.UpdateItemAsync(updateRequest);
+                _logger.LogDebug("Item atualizado com sucesso");
+                return;
+            }
+            
             _logger.LogDebug("Atualizando item do tipo {Type}", typeof(T).Name);
             await _dynamoDbContext.SaveAsync(item);
             _logger.LogDebug("Item atualizado com sucesso");
@@ -135,6 +419,33 @@ public class DynamoDbService : IDynamoDbService
     {
         try
         {
+            // Interceptar tipos que têm configuração de tabela
+            var tableName = GetTableNameForType(typeof(T));
+            if (tableName != null)
+            {
+                _logger.LogDebug("INTERCEPTADO: DeleteAsync<{Type}> usando tabela configurada: {TableName}. ID: {Id}", typeof(T).Name, tableName, id);
+                
+                var hashKeyName = GetHashKeyName(typeof(T));
+                if (hashKeyName == null)
+                {
+                    _logger.LogError("Tipo {Type} não possui atributo DynamoDBHashKey", typeof(T).Name);
+                    throw new InvalidOperationException($"Tipo {typeof(T).Name} não possui atributo DynamoDBHashKey");
+                }
+                
+                var request = new DeleteItemRequest
+                {
+                    TableName = tableName,
+                    Key = new Dictionary<string, AttributeValue>
+                    {
+                        { hashKeyName, new AttributeValue { S = id } }
+                    }
+                };
+                
+                await _dynamoDbClient.DeleteItemAsync(request);
+                _logger.LogDebug("Item deletado com sucesso");
+                return;
+            }
+            
             _logger.LogDebug("Deletando item do tipo {Type} com ID: {Id}", typeof(T).Name, id);
             await _dynamoDbContext.DeleteAsync<T>(id);
             _logger.LogDebug("Item deletado com sucesso");
@@ -150,6 +461,37 @@ public class DynamoDbService : IDynamoDbService
     {
         try
         {
+            // Interceptar tipos que têm configuração de tabela
+            var tableName = GetTableNameForType(typeof(T));
+            if (tableName != null)
+            {
+                _logger.LogDebug("INTERCEPTADO: DeleteAsync<{Type}> usando tabela configurada: {TableName}. HashKey: {HashKey}, RangeKey: {RangeKey}", 
+                    typeof(T).Name, tableName, hashKey, rangeKey);
+                
+                var hashKeyName = GetHashKeyName(typeof(T));
+                var rangeKeyName = GetRangeKeyName(typeof(T));
+                
+                if (hashKeyName == null || rangeKeyName == null)
+                {
+                    _logger.LogError("Tipo {Type} não possui atributos DynamoDBHashKey ou DynamoDBRangeKey", typeof(T).Name);
+                    throw new InvalidOperationException($"Tipo {typeof(T).Name} não possui atributos de chave necessários");
+                }
+                
+                var request = new DeleteItemRequest
+                {
+                    TableName = tableName,
+                    Key = new Dictionary<string, AttributeValue>
+                    {
+                        { hashKeyName, new AttributeValue { S = hashKey } },
+                        { rangeKeyName, new AttributeValue { S = rangeKey } }
+                    }
+                };
+                
+                await _dynamoDbClient.DeleteItemAsync(request);
+                _logger.LogDebug("Item deletado com sucesso");
+                return;
+            }
+            
             _logger.LogDebug("Deletando item do tipo {Type} com HashKey: {HashKey}, RangeKey: {RangeKey}", 
                 typeof(T).Name, hashKey, rangeKey);
             await _dynamoDbContext.DeleteAsync<T>(hashKey, rangeKey);
@@ -196,19 +538,54 @@ public class DynamoDbService : IDynamoDbService
     {
         try
         {
-            _logger.LogDebug("Salvando execução: {ExecucaoId}", execucao.Id);
+            _logger.LogDebug("Salvando execução: {ExecucaoId} na tabela: {TableName}", execucao.Id, _config.TableNameExecucao);
             
-            // Verificar se a execução já existe
-            var existing = await GetAsync<Execucao>(execucao.Id);
+            // Verificar se a execução já existe usando GetExecucaoAsync (que usa o nome correto)
+            var existing = await GetExecucaoAsync(execucao.Id);
+            
+            // Converter Execucao para Dictionary<string, AttributeValue> usando DynamoDBContext
+            var doc = _dynamoDbContext.ToDocument<Execucao>(execucao);
+            var itemDict = doc.ToAttributeMap();
+            
             if (existing != null)
             {
                 _logger.LogDebug("Execução já existe, atualizando: {ExecucaoId}", execucao.Id);
-                await UpdateAsync(execucao);
+                
+                // Remover Id do item pois não pode ser atualizado (é parte da chave primária)
+                var updateItem = itemDict.Where(kvp => kvp.Key != "Id").ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+                
+                // Usar UpdateItemAsync para atualizar
+                var updateRequest = new UpdateItemRequest
+                {
+                    TableName = _config.TableNameExecucao,
+                    Key = new Dictionary<string, AttributeValue>
+                    {
+                        { "Id", new AttributeValue { S = execucao.Id } }
+                    },
+                    AttributeUpdates = updateItem.ToDictionary(
+                        kvp => kvp.Key,
+                        kvp => new AttributeValueUpdate
+                        {
+                            Action = AttributeAction.PUT,
+                            Value = kvp.Value
+                        }
+                    )
+                };
+                
+                await _dynamoDbClient.UpdateItemAsync(updateRequest);
             }
             else
             {
                 _logger.LogDebug("Nova execução, salvando: {ExecucaoId}", execucao.Id);
-                await SaveAsync(execucao);
+                
+                // Usar PutItemAsync para criar
+                var putRequest = new PutItemRequest
+                {
+                    TableName = _config.TableNameExecucao,
+                    Item = itemDict
+                };
+                
+                await _dynamoDbClient.PutItemAsync(putRequest);
             }
             
             _logger.LogDebug("Execução salva com sucesso: {ExecucaoId}", execucao.Id);
@@ -216,7 +593,7 @@ public class DynamoDbService : IDynamoDbService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Erro ao salvar execução: {ExecucaoId}", execucao.Id);
+            _logger.LogError(ex, "Erro ao salvar execução: {ExecucaoId} na tabela: {TableName}", execucao.Id, _config.TableNameExecucao);
             return false;
         }
     }
@@ -225,23 +602,37 @@ public class DynamoDbService : IDynamoDbService
     {
         try
         {
-            _logger.LogDebug("Buscando execução: {ExecucaoId}", execucaoId);
-            var execucao = await GetAsync<Execucao>(execucaoId);
+            _logger.LogDebug("Buscando execução: {ExecucaoId} na tabela: {TableName}", execucaoId, _config.TableNameExecucao);
             
-            if (execucao != null)
+            // Usar GetItemAsync diretamente com o nome de tabela da configuração
+            // para evitar o problema do [DynamoDBTable("Execucoes")] hardcoded
+            var request = new GetItemRequest
             {
-                _logger.LogDebug("Execução encontrada: {ExecucaoId}", execucaoId);
-            }
-            else
+                TableName = _config.TableNameExecucao,
+                Key = new Dictionary<string, AttributeValue>
+                {
+                    { "Id", new AttributeValue { S = execucaoId } }
+                }
+            };
+            
+            var response = await _dynamoDbClient.GetItemAsync(request);
+            
+            if (response.Item == null || response.Item.Count == 0)
             {
-                _logger.LogWarning("Execução não encontrada: {ExecucaoId}", execucaoId);
+                _logger.LogWarning("Execução não encontrada: {ExecucaoId} na tabela: {TableName}", execucaoId, _config.TableNameExecucao);
+                return null;
             }
             
+            // Converter o item DynamoDB para o objeto Execucao
+            var doc = Document.FromAttributeMap(response.Item);
+            var execucao = _dynamoDbContext.FromDocument<Execucao>(doc);
+            
+            _logger.LogDebug("Execução encontrada: {ExecucaoId}", execucaoId);
             return execucao;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Erro ao buscar execução: {ExecucaoId}", execucaoId);
+            _logger.LogError(ex, "Erro ao buscar execução: {ExecucaoId} na tabela: {TableName}", execucaoId, _config.TableNameExecucao);
             return null;
         }
     }
@@ -250,24 +641,39 @@ public class DynamoDbService : IDynamoDbService
     {
         try
         {
-            _logger.LogDebug("Buscando ExecucaoVerificacao: {ExecucaoVerificacaoId}", execucaoVerificacaoId);
+            _logger.LogDebug("Buscando ExecucaoVerificacao: {ExecucaoVerificacaoId} na tabela: {TableName}", 
+                execucaoVerificacaoId, _config.TableNameExecucaoVerificacao);
             
-            var execucaoVerificacao = await _dynamoDbContext.LoadAsync<ExecucaoVerificacao>(execucaoVerificacaoId);
-            
-            if (execucaoVerificacao == null)
+            // Usar GetItemAsync diretamente com o nome de tabela da configuração
+            var request = new GetItemRequest
             {
-                _logger.LogWarning("ExecucaoVerificacao não encontrada: {ExecucaoVerificacaoId}", execucaoVerificacaoId);
-            }
-            else
+                TableName = _config.TableNameExecucaoVerificacao,
+                Key = new Dictionary<string, AttributeValue>
+                {
+                    { "Id", new AttributeValue { S = execucaoVerificacaoId } }
+                }
+            };
+            
+            var response = await _dynamoDbClient.GetItemAsync(request);
+            
+            if (response.Item == null || response.Item.Count == 0)
             {
-                _logger.LogDebug("ExecucaoVerificacao encontrada: {ExecucaoVerificacaoId}", execucaoVerificacaoId);
+                _logger.LogWarning("ExecucaoVerificacao não encontrada: {ExecucaoVerificacaoId} na tabela: {TableName}", 
+                    execucaoVerificacaoId, _config.TableNameExecucaoVerificacao);
+                return null;
             }
             
+            // Converter AttributeValue para objeto ExecucaoVerificacao usando DynamoDBContext
+            var doc = Document.FromAttributeMap(response.Item);
+            var execucaoVerificacao = _dynamoDbContext.FromDocument<ExecucaoVerificacao>(doc);
+            
+            _logger.LogDebug("ExecucaoVerificacao encontrada: {ExecucaoVerificacaoId}", execucaoVerificacaoId);
             return execucaoVerificacao;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Erro ao buscar ExecucaoVerificacao: {ExecucaoVerificacaoId}", execucaoVerificacaoId);
+            _logger.LogError(ex, "Erro ao buscar ExecucaoVerificacao: {ExecucaoVerificacaoId} na tabela: {TableName}", 
+                execucaoVerificacaoId, _config.TableNameExecucaoVerificacao);
             return null;
         }
     }

@@ -91,11 +91,73 @@ public class ProcessorService : IExecucaoProcessorService
             var processResult = await ProcessExecucaoAsync(execucao);
 
             // CONSOLIDAÇÃO: Atualizar execução com contadores consolidados
-            execucao.Status = StatusExecucao.AguardandoProcessamento;
-            execucao.QuantidadeVerificacoes = execucao.Validacoes.Count;
+            // IMPORTANTE: QuantidadeVerificacoes deve refletir apenas as que foram ENVIADAS para a fila
+            execucao.QuantidadeVerificacoes = processResult.QueriesEnviadas;
             execucao.VerificacoesProcessadas = 0;
-            execucao.VerificacoesComErro = 0;
+            
+            // Se houve falhas no processamento, adicionar aos erros E incrementar contador
+            if (processResult.ErrosFalhas?.Any() == true)
+            {
+                _logger.LogWarning("Adicionando {Count} erros de processamento à execução", processResult.ErrosFalhas.Count);
+                execucao.VerificacoesComErro = processResult.ErrosFalhas.Count;
+                
+                foreach (var erroFalha in processResult.ErrosFalhas)
+                {
+                    execucao.Erros.Add(erroFalha);
+                    _logger.LogInformation("Erro registrado: VerificacaoId={VerifId}, NomeVerificacao='{Nome}', IdentificadorConsulta='{Ident}', ErrorCode={Code}, Message={Msg}", 
+                        erroFalha.VerificacaoId, erroFalha.NomeVerificacao, erroFalha.IdentificadorConsulta, erroFalha.ErrorCode, erroFalha.Message);
+                }
+            }
+            else
+            {
+                execucao.VerificacoesComErro = 0;
+            }
+            
             execucao.DataInicioProcessamento = DateTime.UtcNow;
+            
+            // Determinar status baseado no resultado do processamento
+            if (execucao.QuantidadeVerificacoes == 0)
+            {
+                // Se nenhuma query foi enviada, finalizar imediatamente
+                if (execucao.VerificacoesComErro > 0)
+                {
+                    // Todas as verificações falharam
+                    execucao.Status = StatusExecucao.FinalizadaComErro;
+                    execucao.DataFim = DateTime.UtcNow;
+                    _logger.LogWarning("Execução finalizada imediatamente com erro: {ExecucaoId}. Nenhuma query foi enviada. Total de erros: {TotalErros}", 
+                        execucao.Id, execucao.VerificacoesComErro);
+                    
+                    // Atualizar tabelas de performance com status final
+                    try
+                    {
+                        await _execucaoEmpresaService.AtualizarStatusFinalAsync(
+                            execucao.Id,
+                            execucao.IdEmbaixadas ?? new List<string>(),
+                            execucao.Empresa,
+                            execucao.Status);
+                        
+                        _logger.LogInformation("Status final atualizado nas tabelas de performance (finalização imediata com erro)");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Erro ao atualizar tabelas de performance. Continuando...");
+                    }
+                }
+                else
+                {
+                    // Não há verificações para processar (caso raro, mas possível)
+                    execucao.Status = StatusExecucao.FinalizadaComSucesso;
+                    execucao.DataFim = DateTime.UtcNow;
+                    _logger.LogInformation("Execução finalizada imediatamente sem verificações: {ExecucaoId}", execucao.Id);
+                }
+            }
+            else
+            {
+                // Há queries aguardando processamento
+                execucao.Status = StatusExecucao.AguardandoProcessamento;
+                _logger.LogInformation("Execução aguardando processamento: {ExecucaoId}. Queries enviadas: {QueriesEnviadas}, Erros: {Erros}", 
+                    execucao.Id, execucao.QuantidadeVerificacoes, execucao.VerificacoesComErro);
+            }
 
             // Enviar mensagens para fila-execucao-processo (uma por verificação)
             //var filaProcesso = "fila-execucao-processo-dev"; // TODO: Mover para configuração
@@ -115,8 +177,12 @@ public class ProcessorService : IExecucaoProcessorService
             // Atualizar execução no DynamoDB com os campos consolidados
             await _dynamoDbService.UpdateAsync(execucao);
 
-            _logger.LogInformation("Execução processada com sucesso: {ExecucaoId}. Status: {Status}. Verificações enviadas: {Verificacoes}", 
-                execucao.Id, execucao.Status, execucao.QuantidadeVerificacoes);
+            _logger.LogInformation(
+                "Execução processada. ExecucaoId: {ExecucaoId}, Status: {Status}, Verificações enviadas: {Verificacoes}, " +
+                "Total tentadas: {TotalTentadas}, Total com sucesso: {TotalSucesso}, Total com erro: {TotalErro}", 
+                execucao.Id, execucao.Status, execucao.QuantidadeVerificacoes, 
+                processResult.ValidacoesProcessadas, processResult.QueriesEnviadas, 
+                processResult.ErrosFalhas?.Count ?? 0);
 
             return true;
         }
@@ -278,18 +344,57 @@ public class ProcessorService : IExecucaoProcessorService
             }
 
             // Iterar sobre cada validação, delegando ao VerificacaoProcessor
+            _logger.LogInformation("Iniciando processamento de {Count} verificacoes", validacoesParaProcessar.Count);
+            var totalComSucesso = 0;
+            var totalComErro = 0;
+            var errosFalhas = new List<ErroExecucao>();
+            
             foreach (var verificacaoId in validacoesParaProcessar)
             {
                 try
                 {
-                    var enviadas = await _verificacaoProcessor.ProcessarVerificacaoAsync(execucao, verificacaoId);
+                    var (enviadas, erro) = await _verificacaoProcessor.ProcessarVerificacaoAsync(execucao, verificacaoId);
                     if (enviadas > 0)
                     {
                         queriesEnviadas += enviadas;
+                        totalComSucesso++;
+                    }
+                    else if (erro != null)
+                    {
+                        totalComErro++;
+                        errosFalhas.Add(erro);
+                        _logger.LogWarning("Verificação {VerificacaoId} ('{NomeVerificacao}') falhou: {ErrorCode} - {Message}", 
+                            verificacaoId, erro.NomeVerificacao, erro.ErrorCode, erro.Message);
+                    }
+                    else
+                    {
+                        totalComErro++;
+                        // Caso raro onde retornou 0 mas sem erro específico
+                        var erroGenerico = new ErroExecucao
+                        {
+                            VerificacaoId = verificacaoId,
+                            ErrorCode = "PROCESSAMENTO_FALHOU",
+                            Message = "Verificação não pôde ser enviada para a fila (erro desconhecido).",
+                            OccurredAt = DateTime.UtcNow
+                        };
+                        errosFalhas.Add(erroGenerico);
+                        _logger.LogWarning("Verificação {VerificacaoId} falhou no processamento sem detalhes", verificacaoId);
                     }
                 }
                 catch (Exception ex)
                 {
+                    totalComErro++;
+                    
+                    // Registrar erro de exceção
+                    var erroEx = new ErroExecucao
+                    {
+                        VerificacaoId = verificacaoId,
+                        ErrorCode = "EXCEPTION_UNHANDLED",
+                        Message = $"Exceção não tratada ao processar verificação: {ex.Message}",
+                        OccurredAt = DateTime.UtcNow
+                    };
+                    errosFalhas.Add(erroEx);
+                    
                     _logger.LogError(ex, "Erro ao processar verificação {VerificacaoId}", verificacaoId);
                 }
             }
@@ -301,17 +406,19 @@ public class ProcessorService : IExecucaoProcessorService
                 QueriesEnviadas = queriesEnviadas,
                 ProcessadoEm = DateTime.UtcNow
             };
-
-            _logger.LogInformation("Processamento concluído: {ExecucaoId}. Validações: {Validacoes}", 
-                execucao.Id, queriesEnviadas);
+            
+            _logger.LogInformation(
+                "Processamento concluído: {ExecucaoId}. Total tentadas: {Total}, Sucesso: {Sucesso}, Erros: {Erros}, QueriesEnviadas: {Queries}", 
+                execucao.Id, validacoesParaProcessar.Count, totalComSucesso, totalComErro, queriesEnviadas);
 
             return new ProcessResult
             {
                 Success = true,
                 Result = System.Text.Json.JsonSerializer.Serialize(result),
                 Error = null,
-                ValidacoesProcessadas = 0,
-                QueriesEnviadas = queriesEnviadas
+                ValidacoesProcessadas = validacoesParaProcessar.Count,
+                QueriesEnviadas = queriesEnviadas,
+                ErrosFalhas = errosFalhas.Any() ? errosFalhas : null
             };
         }
         catch (Exception ex)
@@ -335,4 +442,5 @@ public class ProcessResult
     public string? Error { get; set; }
     public int ValidacoesProcessadas { get; set; }
     public int QueriesEnviadas { get; set; }
+    public List<ErroExecucao>? ErrosFalhas { get; set; }
 }

@@ -135,7 +135,7 @@ public class AgregacaoResultadosStep : IPostProcessingStep
                 
                 var request = new QueryRequest
                 {
-                    TableName = "Resultado",
+                    TableName = _dynamoConfig.TableNameResultado,
                     IndexName = "GSI_Agregacao",
                     KeyConditionExpression = "GSI1_PK = :execId",
                     ExpressionAttributeValues = new Dictionary<string, AttributeValue>
@@ -214,7 +214,7 @@ public class AgregacaoResultadosStep : IPostProcessingStep
                         Referencia = item.ContainsKey("Referencia") ? item["Referencia"].S : string.Empty,
                         TipoApontamento = item.ContainsKey("TipoApontamento") ? item["TipoApontamento"].S : string.Empty,
                         Nivel = nivelParsed,  // ← VALIDADO (nunca será 0)
-                        Descricao = item.ContainsKey("Descricao") ? item["Descricao"].S : string.Empty,
+                        DetalheErro = item.ContainsKey("DetalheErro") ? item["DetalheErro"].S : string.Empty,  // ← CORRIGIDO
                         ValorEncontrado = item.ContainsKey("ValorEncontrado") ? item["ValorEncontrado"].S : null,
                         ValorEsperado = item.ContainsKey("ValorEsperado") ? item["ValorEsperado"].S : null,
                         IdEmbaixada = idEmbaixadas.FirstOrDefault() ?? string.Empty,  // Compatibilidade
@@ -292,11 +292,24 @@ public class AgregacaoResultadosStep : IPostProcessingStep
                 {
                     gruposSegmentados[chaveStr] = new GrupoAgregadoSegmentado(chave);
                 }
+                
+                // ✅ Primeira vez: Coletar descrição de erro (exemplo do grupo)
+                if (gruposSegmentados[chaveStr].Quantidade == 0 && !string.IsNullOrEmpty(resultado.DetalheErro))
+                {
+                    gruposSegmentados[chaveStr].DescricaoErro = resultado.DetalheErro;
+                }
+                
                 gruposSegmentados[chaveStr].Quantidade++;
                 
                 // ✅ CRÍTICO: Coletar IdEmbaixadas (Union)
                 if (resultado.IdEmbaixadas != null && resultado.IdEmbaixadas.Any())
                 {
+                    _logger.LogDebug(
+                        "Coletando {Count} IdEmbaixadas para grupo {Chave}. IdEmbaixadas: [{Ids}]",
+                        resultado.IdEmbaixadas.Count, 
+                        chaveStr,
+                        string.Join(", ", resultado.IdEmbaixadas));
+                    
                     foreach (var idEmbaixada in resultado.IdEmbaixadas)
                     {
                         if (!string.IsNullOrEmpty(idEmbaixada))
@@ -306,12 +319,25 @@ public class AgregacaoResultadosStep : IPostProcessingStep
                         }
                     }
                 }
+                else
+                {
+                    _logger.LogWarning(
+                        "Resultado sem IdEmbaixadas ou lista vazia. Grupo: {Chave}, Resultado.Empresa: {Empresa}, Resultado.VerificacaoId: {VerificacaoId}",
+                        chaveStr, resultado.Empresa, resultado.VerificacaoId);
+                }
 
                 // === AGREGAÇÃO GLOBAL (Admin) ===
                 if (!gruposGlobais.ContainsKey(chaveStr))
                 {
                     gruposGlobais[chaveStr] = new GrupoAgregadoGlobal(chave);
                 }
+                
+                // ✅ Primeira vez: Coletar descrição de erro (exemplo do grupo)
+                if (gruposGlobais[chaveStr].Quantidade == 0 && !string.IsNullOrEmpty(resultado.DetalheErro))
+                {
+                    gruposGlobais[chaveStr].DescricaoErro = resultado.DetalheErro;
+                }
+                
                 gruposGlobais[chaveStr].Quantidade++;
 
                 totalApontamentos++;
@@ -695,17 +721,45 @@ public class AgregacaoResultadosStep : IPostProcessingStep
                     empresaOriginal, 
                     siglasSolicitadas);
                 
+                _logger.LogDebug(
+                    "Verificando grupo. EmpresaOriginal: {Empresa}, SiglasSolicitadas: [{Siglas}], FoiSolicitada: {FoiSolicitada}, IdEmbaixadasCount: {Count}",
+                    empresaOriginal,
+                    string.Join(", ", siglasSolicitadas),
+                    empresaFoiSolicitada,
+                    grupo.IdEmbaixadas.Count);
+                
                 if (!empresaFoiSolicitada)
                 {
                     totalIgnorados++;
-                    _logger.LogDebug(
-                        "Grupo IGNORADO (empresa nao solicitada): Empresa={Empresa}",
-                        empresaOriginal);
+                    _logger.LogWarning(
+                        "Grupo IGNORADO (empresa nao solicitada): Empresa={Empresa}, SiglasSolicitadas=[{Siglas}]",
+                        empresaOriginal,
+                        string.Join(", ", siglasSolicitadas));
                     continue;
                 }
 
                 // REPLICAÇÃO MÍNIMA: Para cada embaixada deste grupo
-                foreach (var idEmbaixada in grupo.IdEmbaixadas)
+                // FALLBACK: Se não houver embaixadas, usar string vazia para criar pelo menos um registro
+                var embaixadasParaReplicar = grupo.IdEmbaixadas.Any() 
+                    ? grupo.IdEmbaixadas.ToList() 
+                    : new List<string> { string.Empty }; // Fallback para garantir inserção
+                
+                if (!grupo.IdEmbaixadas.Any())
+                {
+                    _logger.LogWarning(
+                        "Grupo SEM IdEmbaixadas! Usando fallback. Grupo: {Chave}, Empresa: {Empresa}, Quantidade: {Quantidade}",
+                        grupo.Chave.ToKey(), empresaOriginal, grupo.Quantidade);
+                }
+                else
+                {
+                    _logger.LogDebug(
+                        "Grupo com {Count} IdEmbaixadas. Empresa: {Empresa}, IdEmbaixadas: [{Ids}]",
+                        grupo.IdEmbaixadas.Count, 
+                        empresaOriginal,
+                        string.Join(", ", grupo.IdEmbaixadas));
+                }
+                
+                foreach (var idEmbaixada in embaixadasParaReplicar)
                 {
                     // DESNORMALIZAÇÃO: Se empresa tem múltiplas siglas
                     if (empresaOriginal.Contains(','))
@@ -745,6 +799,7 @@ public class AgregacaoResultadosStep : IPostProcessingStep
                                 Referencia = grupo.Chave.Referencia,
                                 TipoApontamento = grupo.Chave.TipoApontamento,
                                 Nivel = grupo.Chave.Nivel,
+                                DescricaoErro = grupo.DescricaoErro,  // ← ADICIONADO
                                 DataCriacao = DateTime.UtcNow
                             };
 
@@ -781,6 +836,7 @@ public class AgregacaoResultadosStep : IPostProcessingStep
                             Referencia = grupo.Chave.Referencia,
                             TipoApontamento = grupo.Chave.TipoApontamento,
                             Nivel = grupo.Chave.Nivel,
+                            DescricaoErro = grupo.DescricaoErro,  // ← ADICIONADO
                             DataCriacao = DateTime.UtcNow
                         };
 
@@ -899,6 +955,7 @@ public class AgregacaoResultadosStep : IPostProcessingStep
                             Referencia = grupo.Chave.Referencia,
                             TipoApontamento = grupo.Chave.TipoApontamento,
                             Nivel = grupo.Chave.Nivel,
+                            DescricaoErro = grupo.DescricaoErro,  // ← ADICIONADO
                             DataCriacao = DateTime.UtcNow
                         };
 
@@ -934,6 +991,7 @@ public class AgregacaoResultadosStep : IPostProcessingStep
                         Referencia = grupo.Chave.Referencia,
                         TipoApontamento = grupo.Chave.TipoApontamento,
                         Nivel = grupo.Chave.Nivel,
+                        DescricaoErro = grupo.DescricaoErro,  // ← ADICIONADO
                         DataCriacao = DateTime.UtcNow
                     };
 

@@ -145,6 +145,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IPostProcessingPipeline, EmbaixadasWorkManager.Services.PostProcessing.PostProcessingPipeline>();
         services.AddSingleton<IPostProcessingStep, EmbaixadasWorkManager.Services.PostProcessing.Steps.AgrupamentoStep>();
         services.AddSingleton<IPostProcessingStep, EmbaixadasWorkManager.Services.PostProcessing.Steps.ExclusaoRegistrosStep>();
+        services.AddSingleton<IPostProcessingStep, EmbaixadasWorkManager.Services.PostProcessing.Steps.ProcessamentoJustificativasStep>();
         services.AddSingleton<IPostProcessingStep, EmbaixadasWorkManager.Services.PostProcessing.Steps.AgregacaoResultadosStep>();
         
         // Novos serviços especializados

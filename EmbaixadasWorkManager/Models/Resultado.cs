@@ -6,27 +6,27 @@ namespace EmbaixadasWorkManager.Models;
 /// Modelo de apontamento de erro detalhado da execução de verificações.
 /// 
 /// Estrutura de Chaves:
-/// PK: EXEC#<ExecucaoId>#VERIF#<VerificacaoId>
-/// SK: ERRO#<Timestamp>#<Seq>
+/// PK: VER#<ExecucaoId>#<VerificacaoId>  (ATENÇÃO: Formato REAL na tabela DynamoDB!)
+/// SK: RES#<CodId>
 /// 
-/// GSI para Agregação:
+/// GSI para Agregação (GSI_Agregacao):
 /// GSI1_PK: EXEC#<ExecucaoId>
-/// GSI1_SK: EMP#<Empresa>#<Timestamp>
+/// GSI1_SK: VER#<VerificacaoId>#EMP#<Empresa>#TAB#<Tabela>#CAMPO#<Campo>
 /// 
-/// Permite buscar todos os apontamentos de uma execução de forma otimizada
-/// usando o GSI_Agregacao.
+/// IMPORTANTE: O método CriarPK() NÃO reflete o formato real da tabela!
+/// Para uso direto, utilize: $"VER#{execId}#{verifId}"
 /// </summary>
 [DynamoDBTable("Resultado")]
 public class Resultado
 {
     /// <summary>
-    /// Partition Key: EXEC#<ExecucaoId>#VERIF#<VerificacaoId>
+    /// Partition Key: VER#<ExecucaoId>#<VerificacaoId>
     /// </summary>
     [DynamoDBHashKey("PK")]
     public string PK { get; set; } = string.Empty;
 
     /// <summary>
-    /// Sort Key: ERRO#<Timestamp>#<Seq>
+    /// Sort Key: RES#<CodId>
     /// </summary>
     [DynamoDBRangeKey("SK")]
     public string SK { get; set; } = string.Empty;
@@ -39,8 +39,8 @@ public class Resultado
     public string GSI1_PK { get; set; } = string.Empty;
 
     /// <summary>
-    /// GSI Sort Key: EMP#<Empresa>#<Timestamp>
-    /// Permite ordenar por empresa e data
+    /// GSI Sort Key: VER#<VerifId>#EMP#<Empresa>#TAB#<Tabela>#CAMPO#<Campo>
+    /// Permite filtrar por verificação, empresa, tabela e campo
     /// </summary>
     [DynamoDBGlobalSecondaryIndexRangeKey("GSI1_SK", "GSI_Agregacao")]
     public string GSI1_SK { get; set; } = string.Empty;
@@ -98,10 +98,10 @@ public class Resultado
     // === Dados do Erro ===
 
     /// <summary>
-    /// Descrição detalhada do erro
+    /// Descrição detalhada do erro (campo DetalheErro no DynamoDB)
     /// </summary>
-    [DynamoDBProperty("Descricao")]
-    public string Descricao { get; set; } = string.Empty;
+    [DynamoDBProperty("DetalheErro")]
+    public string DetalheErro { get; set; } = string.Empty;
 
     /// <summary>
     /// Valor encontrado que causou o erro
@@ -152,7 +152,9 @@ public class Resultado
     }
 
     /// <summary>
-    /// Cria a SK no formato correto
+    /// Cria a SK no formato correto: RES#<CodId>
+    /// NOTA: Este método está deprecated, pois não reflete o formato real da tabela.
+    /// Use diretamente: $"RES#{codId}"
     /// </summary>
     public static string CriarSK(DateTime timestamp, int sequencia)
     {
@@ -169,7 +171,9 @@ public class Resultado
     }
 
     /// <summary>
-    /// Cria o GSI1_SK no formato correto
+    /// Cria o GSI1_SK no formato correto: VER#<VerifId>#EMP#<Empresa>#TAB#<Tabela>#CAMPO#<Campo>
+    /// NOTA: Este método está deprecated, pois não reflete o formato real da tabela.
+    /// Use diretamente: $"VER#{verifId}#EMP#{empresa}#TAB#{tabela}#CAMPO#{campo}"
     /// </summary>
     public static string CriarGSI1_SK(string empresa, DateTime timestamp)
     {
