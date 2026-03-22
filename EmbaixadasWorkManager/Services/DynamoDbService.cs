@@ -552,7 +552,8 @@ public class DynamoDbService : IDynamoDbService
                 _logger.LogDebug("Execução já existe, atualizando: {ExecucaoId}", execucao.Id);
                 
                 // Remover Id do item pois não pode ser atualizado (é parte da chave primária)
-                var updateItem = itemDict.Where(kvp => kvp.Key != "Id").ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+                // PROTEGER TotalApontamentos: Deixar apenas os Workers incrementarem esse campo atomicamente!
+                var updateItem = itemDict.Where(kvp => kvp.Key != "Id" && kvp.Key != "TotalApontamentos").ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
                 
                 // Usar UpdateItemAsync para atualizar
                 var updateRequest = new UpdateItemRequest
@@ -749,4 +750,98 @@ public class DynamoDbService : IDynamoDbService
         }
     }
 
+    public async Task<Execucao?> IncrementarContadoresExecucaoAsync(string execucaoId, bool isSuccess, int totalApontamentos, ErroExecucao? erro)
+    {
+        try
+        {
+            _logger.LogDebug("Incrementando contadores atômicos para execução {ExecucaoId}. Sucesso: {IsSuccess}, Novos Apontamentos: {TotalApontamentos}", 
+                execucaoId, isSuccess, totalApontamentos);
+
+            // Preparação dos valores para o DynamoDB
+            // Incrementamos a volumetria SEMPRE, independente de ser sucesso ou erro (shards podem falhar mas ter processado algo, 
+            // embora aqui 'isSuccess' venha do shard completo).
+            var updateExpression = isSuccess 
+                ? "ADD VerificacoesProcessadas :one, TotalApontamentos :apont" 
+                : "ADD VerificacoesComErro :one, TotalApontamentos :apont";
+
+            var expressionAttributeValues = new Dictionary<string, AttributeValue>
+            {
+                { ":one", new AttributeValue { N = "1" } },
+                { ":apont", new AttributeValue { N = totalApontamentos.ToString() } }
+            };
+
+            if (!isSuccess && erro != null)
+            {
+                // Converter o objeto erro para o formato DynamoDB usando o contexto já existente
+                var erroDoc = _dynamoDbContext.ToDocument(erro);
+                var erroMap = erroDoc.ToAttributeMap();
+
+                // list_append(if_not_exists) garante que a lista seja criada caso ainda não exista
+                updateExpression += " SET Erros = list_append(if_not_exists(Erros, :empty_list), :new_error_list)";
+                expressionAttributeValues[":empty_list"] = new AttributeValue { L = new List<AttributeValue>() };
+                expressionAttributeValues[":new_error_list"] = new AttributeValue { L = new List<AttributeValue> { new AttributeValue { M = erroMap } } };
+            }
+
+            var request = new UpdateItemRequest
+            {
+                TableName = _config.TableNameExecucao,
+                Key = new Dictionary<string, AttributeValue>
+                {
+                    { "Id", new AttributeValue { S = execucaoId } }
+                },
+                UpdateExpression = updateExpression,
+                ExpressionAttributeValues = expressionAttributeValues,
+                ReturnValues = ReturnValue.ALL_NEW // Retornar o item completo ATUALIZADO
+            };
+
+            var response = await _dynamoDbClient.UpdateItemAsync(request);
+            
+            // Converter o Map de volta para o objeto Execucao
+            if (response.Attributes != null && response.Attributes.Count > 0)
+            {
+                var doc = Document.FromAttributeMap(response.Attributes);
+                return _dynamoDbContext.FromDocument<Execucao>(doc);
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao incrementar contadores atômicos para execução {ExecucaoId}", execucaoId);
+            return null;
+        }
+    }
+
+    public async Task<Execucao?> AtualizarConsolidacaoExecucaoAsync(string execucaoId, int quantidadeVerificacoes, string statusExecucao)
+    {
+        try
+        {
+            var updateRequest = new UpdateItemRequest
+            {
+                TableName = _config.TableNameExecucao,
+                Key = new Dictionary<string, AttributeValue> { { "Id", new AttributeValue { S = execucaoId } } },
+                UpdateExpression = "SET QuantidadeVerificacoes = :qtd, #st = :status",
+                ExpressionAttributeNames = new Dictionary<string, string> { { "#st", "Status" } },
+                ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+                {
+                    { ":qtd", new AttributeValue { N = quantidadeVerificacoes.ToString() } },
+                    { ":status", new AttributeValue { S = statusExecucao } }
+                },
+                ReturnValues = ReturnValue.ALL_NEW
+            };
+
+            var response = await _dynamoDbClient.UpdateItemAsync(updateRequest);
+            
+            if (response.Attributes == null || response.Attributes.Count == 0)
+                return null;
+                
+            var doc = Document.FromAttributeMap(response.Attributes);
+            return _dynamoDbContext.FromDocument<Execucao>(doc);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao atualizar consolidação da execução {ExecucaoId}", execucaoId);
+            return null;
+        }
+    }
 }

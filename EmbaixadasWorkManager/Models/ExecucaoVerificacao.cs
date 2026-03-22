@@ -67,6 +67,15 @@ public class ExecucaoVerificacao
     [DynamoDBProperty("TotalRecordsProcessados")]
     public int TotalRecordsProcessados { get; set; }
 
+    [DynamoDBProperty("TotalRegistrosEstimados")]
+    public int TotalRegistrosEstimados { get; set; }
+
+    [DynamoDBProperty("Offset")]
+    public int? Offset { get; set; }
+
+    [DynamoDBProperty("Limit")]
+    public int? Limit { get; set; }
+
     // Configurações
     [DynamoDBProperty("TimeoutSegundos")]
     public int TimeoutSegundos { get; set; } = 60;

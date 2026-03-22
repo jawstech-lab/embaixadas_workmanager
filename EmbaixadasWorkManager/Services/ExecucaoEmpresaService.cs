@@ -248,7 +248,8 @@ public class ExecucaoEmpresaService : IExecucaoEmpresaService
         string execucaoId,
         List<string> idEmbaixadas,
         string empresasString,
-        string statusFinal)
+        string statusFinal,
+        int totalApontamentos)
     {
         try
         {
@@ -286,15 +287,17 @@ public class ExecucaoEmpresaService : IExecucaoEmpresaService
                                 { "PK_VIEW", new AttributeValue { S = pk } },
                                 { "SK_VIEW", new AttributeValue { S = sk } }
                             },
-                            UpdateExpression = "SET #status = :status",
+                            UpdateExpression = "SET #status = :status, #total = :total",
                             ConditionExpression = "ExecucaoId = :execId",
                             ExpressionAttributeNames = new Dictionary<string, string>
                             {
-                                { "#status", "Status" }
+                                { "#status", "Status" },
+                                { "#total", "TotalApontamentos" }
                             },
                             ExpressionAttributeValues = new Dictionary<string, AttributeValue>
                             {
                                 { ":status", new AttributeValue { S = statusFinal } },
+                                { ":total", new AttributeValue { N = totalApontamentos.ToString() } },
                                 { ":execId", new AttributeValue { S = execucaoId } }
                             }
                         };

@@ -1,6 +1,9 @@
 using EmbaixadasWorkManager.Interfaces;
 using EmbaixadasWorkManager.Models;
 using EmbaixadasWorkManager.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Configuration;
 
 namespace EmbaixadasWorkManager.Services;
 
@@ -11,22 +14,31 @@ public class VerificacaoProcessorService : IVerificacaoProcessorService
 	private readonly IConsultaService _consultaService;
 	private readonly IResilientSqsService _resilientSqsService;
 	private readonly SqsConfiguration _sqsConfiguration;
+	private readonly IDatabaseCountService _databaseCountService;
+	private readonly ProcessamentoConfiguration _processamentoConfig;
+	private readonly string _dbConnectionString;
 
 	public VerificacaoProcessorService(
 		ILogger<VerificacaoProcessorService> logger,
 		IDynamoDbService dynamoDbService,
 		IConsultaService consultaService,
 		IResilientSqsService resilientSqsService,
-		SqsConfiguration sqsConfiguration)
+		SqsConfiguration sqsConfiguration,
+		IDatabaseCountService databaseCountService,
+		IOptions<ProcessamentoConfiguration> processamentoConfig,
+		IConfiguration configuration)
 	{
 		_logger = logger;
 		_dynamoDbService = dynamoDbService;
 		_consultaService = consultaService;
 		_resilientSqsService = resilientSqsService;
 		_sqsConfiguration = sqsConfiguration;
+		_databaseCountService = databaseCountService;
+		_processamentoConfig = processamentoConfig.Value;
+		_dbConnectionString = configuration["DB_CONNECTION_STRING"] ?? string.Empty;
 	}
 
-	public async Task<(int queriesEnviadas, ErroExecucao? erro)> ProcessarVerificacaoAsync(Execucao execucao, string verificacaoId)
+	public async Task<(int queriesEnviadas, int totalRegistros, ErroExecucao? erro)> ProcessarVerificacaoAsync(Execucao execucao, string verificacaoId)
 	{
 		_logger.LogInformation("=== INICIO Processamento Verificacao: {VerificacaoId} para Execucao: {ExecucaoId} ===", verificacaoId, execucao.Id);
 		
@@ -48,7 +60,7 @@ public class VerificacaoProcessorService : IVerificacaoProcessorService
 					Message = $"Verificação com ID {verificacaoId} não encontrada no DynamoDB.",
 					OccurredAt = DateTime.UtcNow
 				};
-				return (0, erro);
+				return (0, 0, erro);
 			}
 			_logger.LogDebug("ETAPA 1/5: SUCESSO - Verificacao encontrada: {NomeVerificacao}", verificacao.NomeVerificacao);
 
@@ -67,7 +79,7 @@ public class VerificacaoProcessorService : IVerificacaoProcessorService
 					Message = $"Consulta com ID {verificacao.IdConsulta} não encontrada no DynamoDB para a Verificação '{verificacao.NomeVerificacao}' ({verificacaoId}).",
 					OccurredAt = DateTime.UtcNow
 				};
-				return (0, erro);
+				return (0, 0, erro);
 			}
 			_logger.LogDebug("ETAPA 2/5: SUCESSO - Consulta encontrada: {IdConsulta} - {Identificador}", consulta.Id, consulta.Identificador);
 
@@ -80,51 +92,80 @@ public class VerificacaoProcessorService : IVerificacaoProcessorService
 
 			_logger.LogDebug("ETAPA 3/5: SUCESSO - SQL processado: {SqlProcessado}", sqlProcessado);
 
-			// NOVA ARQUITETURA: Criar/atualizar ExecucaoVerificacao
-			_logger.LogDebug("ETAPA 4/5: Criando/Atualizando ExecucaoVerificacao no DynamoDB");
-			var execucaoVerificacao = await CriarOuAtualizarExecucaoVerificacaoAsync(
-				execucao, verificacao, consulta, sqlProcessado);
-
-			if (execucaoVerificacao == null)
-			{
-				_logger.LogError("ETAPA 4/5: FALHA - Falha ao criar ExecucaoVerificacao. ExecucaoId: {ExecucaoId}, VerificacaoId: {VerificacaoId}", execucao.Id, verificacao.Id);
-				var erro = new ErroExecucao
-				{
-					VerificacaoId = verificacaoId,
-					NomeVerificacao = verificacao.NomeVerificacao,
-					IdentificadorConsulta = consulta.Identificador,
-					ErrorCode = "EXECUCAO_VERIFICACAO_NAO_CRIADA",
-					Message = $"Falha ao criar ExecucaoVerificacao para Execucao {execucao.Id} e Verificação '{verificacao.NomeVerificacao}' ({verificacaoId}).",
-					OccurredAt = DateTime.UtcNow
-				};
-				return (0, erro);
-			}
-			_logger.LogDebug("ETAPA 4/5: SUCESSO - ExecucaoVerificacao criada: {ExecucaoVerificacaoId}", execucaoVerificacao.Id);
-
-			var id = execucaoVerificacao.Id;
-
-			// Enviar APENAS o ID para a fila (nova arquitetura)
-			_logger.LogDebug("ETAPA 5/5: Enviando QueryExecutionMessage para fila SQS");
-			var enviada = await EnviarQueryExecutionAsync(id);
+			// --- LÓGICA DE VOLUMETRIA E SHARDING ---
+			_logger.LogInformation("ETAPA 4/5: Analisando volumetria para decidir Sharding. Verificacao: {VerificacaoId}", verificacaoId);
 			
-			if (enviada)
+			int totalRegistros = 0;
+			try
 			{
-				_logger.LogInformation("=== SUCESSO TOTAL - Verificacao {VerificacaoId} processada e enviada para fila ===", verificacaoId);
-				return (1, null);
+				totalRegistros = await _databaseCountService.GetTotalCountAsync(sqlProcessado, "PostgreSQL", _dbConnectionString, verificacao.ValoresParametros.ToDictionary(p => p.IdParametro, p => (object)p.ValorParametro));
+				_logger.LogInformation("Volumetria detectada: {TotalRegistros} registros", totalRegistros);
+			}
+			catch (Exception ex)
+			{
+				_logger.LogWarning(ex, "Falha ao obter contagem para sharding. Seguindo com mensagem única (sem sharding).");
+				totalRegistros = -1; // Sinaliza que não foi possível contar
+			}
+
+			var shardSize = _processamentoConfig.ShardSize;
+			var queriesEnviadasComSucesso = 0;
+
+			// ETAPA 5/5: Criar metadados e enviar para as filas
+			if (totalRegistros > shardSize)
+			{
+				var numShards = (int)Math.Ceiling((double)totalRegistros / shardSize);
+				_logger.LogInformation("SHARDING ATIVADO: Dividindo {Total} registros em {NumShards} lotes de {Size}", totalRegistros, numShards, shardSize);
+
+				for (int i = 0; i < numShards; i++)
+				{
+					var offset = i * shardSize;
+					var limit = shardSize;
+					
+					// Criar um registro único de metadados para ESTE shard
+					var shardMetadata = await CriarOuAtualizarExecucaoVerificacaoAsync(
+						execucao, verificacao, consulta, sqlProcessado, offset, limit, i);
+
+					if (shardMetadata != null)
+					{
+						var enviadoShard = await EnviarQueryExecutionAsync(shardMetadata.Id, offset, limit);
+						if (enviadoShard) queriesEnviadasComSucesso++;
+					}
+				}
 			}
 			else
 			{
-				_logger.LogError("=== FALHA - Verificacao {VerificacaoId} processada mas NAO enviada para fila ===", verificacaoId);
+				// Envio normal (sem sharding ou count falhou)
+				_logger.LogInformation("SHARDING DESATIVADO: Criando metadados e enviando mensagem única.");
+				
+				var execucaoVerificacao = await CriarOuAtualizarExecucaoVerificacaoAsync(
+					execucao, verificacao, consulta, sqlProcessado);
+
+				if (execucaoVerificacao != null)
+				{
+					var enviada = await EnviarQueryExecutionAsync(execucaoVerificacao.Id);
+					if (enviada) queriesEnviadasComSucesso = 1;
+				}
+			}
+			
+			if (queriesEnviadasComSucesso > 0)
+			{
+				_logger.LogInformation("=== SUCESSO TOTAL - Verificacao {VerificacaoId} processada. Mensagens enviadas: {Count} ===", verificacaoId, queriesEnviadasComSucesso);
+				
+				return (queriesEnviadasComSucesso, totalRegistros, null);
+			}
+			else
+			{
+				_logger.LogError("=== FALHA - Nenhuma mensagem enviada para fila SQS. Verificacao: {VerificacaoId} ===", verificacaoId);
 				var erro = new ErroExecucao
 				{
 					VerificacaoId = verificacaoId,
 					NomeVerificacao = verificacao.NomeVerificacao,
 					IdentificadorConsulta = consulta.Identificador,
 					ErrorCode = "ENVIO_SQS_FALHOU",
-					Message = $"Falha ao enviar mensagem para a fila SQS. Verificação '{verificacao.NomeVerificacao}' ({verificacaoId}). ExecucaoVerificacaoId: {id}",
+					Message = $"Falha ao enviar mensagens SQS (com ou sem sharding). Verificação '{verificacao.NomeVerificacao}' ({verificacaoId}).",
 					OccurredAt = DateTime.UtcNow
 				};
-				return (0, erro);
+				return (0, 0, erro);
 			}
 		}
 		catch (Exception ex)
@@ -139,12 +180,13 @@ public class VerificacaoProcessorService : IVerificacaoProcessorService
 				Message = $"Exceção ao processar verificação: {ex.Message}",
 				OccurredAt = DateTime.UtcNow
 			};
-			return (0, erro);
+			return (0, 0, erro);
 		}
 	}
 
 	private async Task<ExecucaoVerificacao?> CriarOuAtualizarExecucaoVerificacaoAsync(
-		Execucao execucao, Verificacao verificacao, Consulta consulta, string sqlProcessado)
+		Execucao execucao, Verificacao verificacao, Consulta consulta, string sqlProcessado, 
+		int? offset = null, int? limit = null, int? shardIndex = null)
 	{
 		try
 		{
@@ -162,6 +204,9 @@ public class VerificacaoProcessorService : IVerificacaoProcessorService
 				TimeoutSegundos = consulta.TimeoutSegundos,
 				Prioridade = consulta.Prioridade,
 				Status = StatusExecucaoVerificacao.Pendente,
+				Offset = offset,
+				Limit = limit,
+				TotalRegistrosEstimados = limit ?? 0,
 				// Novos campos da Verificação
 				TipoApontamento = verificacao.IdTipo,
 				Nivel = verificacao.Nivel,
@@ -176,6 +221,13 @@ public class VerificacaoProcessorService : IVerificacaoProcessorService
 				}
 			};
 
+			if (shardIndex.HasValue)
+			{
+				execucaoVerificacao.Metadata["shardIndex"] = shardIndex.Value.ToString();
+				execucaoVerificacao.Metadata["offset"] = offset?.ToString() ?? "0";
+				execucaoVerificacao.Metadata["limit"] = limit?.ToString() ?? "0";
+			}
+
 			await _dynamoDbService.SaveAsync(execucaoVerificacao);
 			_logger.LogInformation("ExecucaoVerificacao criada/atualizada: {ExecucaoId}#{VerificacaoId}", 
 				execucaoVerificacao.ExecucaoId, execucaoVerificacao.VerificacaoId);
@@ -189,21 +241,30 @@ public class VerificacaoProcessorService : IVerificacaoProcessorService
 		}
 	}
 
-	private async Task<bool> EnviarQueryExecutionAsync(string verificacaoId)
+	private async Task<bool> EnviarQueryExecutionAsync(string verificacaoId, int? offset = null, int? limit = null)
 	{
 		try
 		{
-			// Criar mensagem leve com apenas o ID
+			// Criar mensagem leve com apenas o ID e parâmetros de sharding
 			var mensagem = new QueryExecutionMessage
 			{
 				ExecucaoVerificacaoId = verificacaoId,
+				Offset = offset,
+				Limit = limit,
 				Timestamp = DateTime.UtcNow
 			};
 
 			var body = System.Text.Json.JsonSerializer.Serialize(mensagem);
-			_logger.LogInformation("Enviando query execution para fila: {VerificacaoId} -> {FilaQuery}", 
-				verificacaoId, _sqsConfiguration.FilaExecucaoQuery);
-			_logger.LogDebug("Mensagem da query execution: {Body}", body);
+			
+			if (offset.HasValue)
+			{
+				_logger.LogInformation("Enviando SHARD para fila: {VerificacaoId} (Offset: {Offset}, Limit: {Limit})", 
+					verificacaoId, offset, limit);
+			}
+			else
+			{
+				_logger.LogInformation("Enviando query execution normal para fila: {VerificacaoId}", verificacaoId);
+			}
 
 			// Obter URL da fila de query
 			var queueUrl = await _resilientSqsService.GetQueueUrlAsync(_sqsConfiguration.FilaExecucaoQuery);
@@ -216,16 +277,7 @@ public class VerificacaoProcessorService : IVerificacaoProcessorService
 			// Enviar mensagem para a fila de queries usando o serviço resiliente
 			var enviado = await _resilientSqsService.SendMessageAsync(queueUrl, body);
 			
-			if (enviado)
-			{
-				_logger.LogInformation("Query execution enviada com sucesso: {VerificacaoId}", verificacaoId);
-				return true;
-			}
-			else
-			{
-				_logger.LogError("Falha ao enviar query execution: {VerificacaoId}", verificacaoId);
-				return false;
-			}
+			return enviado;
 		}
 		catch (Exception ex)
 		{

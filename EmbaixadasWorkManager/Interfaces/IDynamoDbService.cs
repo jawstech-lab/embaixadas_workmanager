@@ -25,5 +25,11 @@ public interface IDynamoDbService
     // Métodos específicos para Verificacao
     Task<List<Verificacao>> GetTodasVerificacoesAsync();
     Task<List<Verificacao>> GetVerificacoesPorEmbaixadasAsync(List<string> idEmbaixadas);
+
+    // Métodos de Incremento Atômico para Performance
+    Task<Execucao?> IncrementarContadoresExecucaoAsync(string execucaoId, bool isSuccess, int totalApontamentos, ErroExecucao? erro);
+    
+    // Atualiza apenas os contadores base, sem sobrescrever o objeto todo
+    Task<Execucao?> AtualizarConsolidacaoExecucaoAsync(string execucaoId, int quantidadeVerificacoes, string statusExecucao);
 }
 

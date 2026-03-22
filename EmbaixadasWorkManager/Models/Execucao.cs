@@ -66,5 +66,11 @@ public class Execucao
 
     [DynamoDBProperty("TotalApontamentos")]
     public int TotalApontamentos { get; set; }
+
+    [DynamoDBProperty("TotalRegistrosEstimados")]
+    public int TotalRegistrosEstimados { get; set; }
+
+    [DynamoDBProperty("TotalRecordsProcessados")]
+    public int TotalRecordsProcessados { get; set; }
 }
 

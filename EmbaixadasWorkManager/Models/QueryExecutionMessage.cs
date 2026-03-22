@@ -15,6 +15,18 @@ public class QueryExecutionMessage
     public string ExecucaoVerificacaoId { get; set; } = string.Empty;
 
     /// <summary>
+    /// Deslocamento inicial para o sharding
+    /// </summary>
+    [JsonPropertyName("offset")]
+    public int? Offset { get; set; }
+
+    /// <summary>
+    /// Quantidade de registros para este shard
+    /// </summary>
+    [JsonPropertyName("limit")]
+    public int? Limit { get; set; }
+
+    /// <summary>
     /// Timestamp da mensagem
     /// </summary>
     [JsonPropertyName("timestamp")]

@@ -30,15 +30,27 @@ public class Worker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Worker iniciado em: {Time}", DateTimeOffset.Now);
+        _logger.LogInformation("Worker iniciando em: {Time}", DateTimeOffset.Now);
 
         // Teste inicial de conectividade
         await PerformInitialHealthCheck();
 
+        // Rodar loops de cada fila em paralelo para que uma fila lenta (ex: agregações gigantes)
+        // não bloqueie o recebimento de novos gatilhos rápidos (Execução).
+        var taskExecucao = ProcessQueueLoopAsync(_sqsConfig.FilaExecucao, stoppingToken);
+        var taskProcesso = ProcessQueueLoopAsync(_sqsConfig.FilaExecucaoProcesso, stoppingToken);
+        
+        await Task.WhenAll(taskExecucao, taskProcesso);
+
+        _logger.LogInformation("Worker finalizado em: {Time}", DateTimeOffset.Now);
+    }
+
+    private async Task ProcessQueueLoopAsync(string queueName, CancellationToken stoppingToken)
+    {
+        _logger.LogInformation("Iniciado loop de monitoramento para a fila: {QueueName}", queueName);
+
         while (!stoppingToken.IsCancellationRequested)
         {
-            _logger.LogInformation("Worker executando em: {Time}", DateTimeOffset.Now);
-            
             try
             {
                 // Verificar saúde das filas periodicamente
@@ -46,32 +58,22 @@ public class Worker : BackgroundService
                 {
                     await PerformPeriodicHealthCheck();
                 }
-                
-                // Processar mensagens da fila de execução
-                await ProcessExecutionQueue();
-                
-                // Processar mensagens da fila de processo
-                await ProcessProcessoQueue();
-                
-                // Processar mensagens da fila de queries (nova arquitetura)
-                //await ProcessQueryExecutionQueue();
-                
-                // Aguardar antes da próxima execução
-                await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+
+                _logger.LogDebug("[POLLING] Verificando fila: {QueueName}", queueName);
+                var result = await _messageProcessorService.ProcessQueueMessagesAsync(queueName);
+
+                // Se processamos algo, não esperamos (delay mínimo)
+                // Se não há nada na fila, esperamos o tempo configurado
+                var delaySeconds = (result.Success && result.ProcessedCount > 0) ? 0.1 : 5.0;
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds), stoppingToken);
             }
-            catch (OperationCanceledException)
-            {
-                _logger.LogInformation("Worker cancelado");
-                break;
-            }
+            catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro durante execução do Worker");
+                _logger.LogError(ex, "Erro no loop da fila {QueueName}", queueName);
                 await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
             }
         }
-
-        _logger.LogInformation("Worker finalizado em: {Time}", DateTimeOffset.Now);
     }
 
     private async Task PerformInitialHealthCheck()

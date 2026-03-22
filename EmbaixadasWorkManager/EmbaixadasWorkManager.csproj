@@ -11,6 +11,8 @@
     <PackageReference Include="AWSSDK.DynamoDBv2" Version="4.0.4.1" />
     <PackageReference Include="AWSSDK.Extensions.NETCore.Setup" Version="4.0.2.1" />
     <PackageReference Include="AWSSDK.SQS" Version="4.0.0.21" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.4" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" />
+    <PackageReference Include="Npgsql" Version="10.0.2" />
   </ItemGroup>
 </Project>

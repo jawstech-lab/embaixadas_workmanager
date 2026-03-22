@@ -39,11 +39,13 @@ public interface IExecucaoEmpresaService
     /// <param name="idEmbaixadas">Lista de IDs de embaixadas</param>
     /// <param name="empresasString">String com empresas</param>
     /// <param name="statusFinal">Status final da execução</param>
+    /// <param name="totalApontamentos">A volumetria perfeitamente cálculada no banco</param>
     Task AtualizarStatusFinalAsync(
         string execucaoId,
         List<string> idEmbaixadas,
         string empresasString,
-        string statusFinal);
+        string statusFinal,
+        int totalApontamentos);
 
     /// <summary>
     /// Extrai siglas de empresas de uma string separada por vírgulas, ponto e vírgula ou pipe.

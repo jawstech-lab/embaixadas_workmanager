@@ -62,31 +62,34 @@ public class MessageProcessorService : IMessageProcessorService
             
             _logger.LogInformation("Recebidas {MessageCount} mensagens da fila {QueueName}", messages.Count, queueName);
             
-            // Processar cada mensagem
-            foreach (var message in messages)
+            // Processar mensagens em paralelo para maximizar a vazão (Throughput)
+            var processingTasks = messages.Select(async message =>
             {
                 try
                 {
-                    _logger.LogDebug("Processando mensagem: {MessageId}", message.MessageId);
-                    
-                  var success = await ProcessMessageAsync(message, queueName);
-                    
-                    if (success)
-                    {
-                        result.ProcessedCount++;
-                        result.ProcessedReceiptHandles.Add(message.ReceiptHandle);
-                        _logger.LogDebug("Mensagem processada com sucesso: {MessageId}", message.MessageId);
-                    }
-                    else
-                    {
-                        result.FailedCount++;
-                        _logger.LogWarning("Falha ao processar mensagem: {MessageId}", message.MessageId);
-                    }
+                    _logger.LogDebug("Iniciando processamento paralelo da mensagem: {MessageId}", message.MessageId);
+                    var success = await ProcessMessageAsync(message, queueName);
+                    return new { Success = success, ReceiptHandle = message.ReceiptHandle, MessageId = message.MessageId };
                 }
                 catch (Exception ex)
                 {
+                    _logger.LogError(ex, "Erro fatal ao processar mensagem {MessageId} em paralelo", message.MessageId);
+                    return new { Success = false, ReceiptHandle = message.ReceiptHandle, MessageId = message.MessageId };
+                }
+            });
+
+            var processingResults = await Task.WhenAll(processingTasks);
+
+            foreach (var processResult in processingResults)
+            {
+                if (processResult.Success)
+                {
+                    result.ProcessedCount++;
+                    result.ProcessedReceiptHandles.Add(processResult.ReceiptHandle);
+                }
+                else
+                {
                     result.FailedCount++;
-                    _logger.LogError(ex, "Erro ao processar mensagem: {MessageId}", message.MessageId);
                 }
             }
             

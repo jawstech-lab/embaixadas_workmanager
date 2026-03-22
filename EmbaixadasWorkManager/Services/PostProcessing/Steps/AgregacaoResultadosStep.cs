@@ -147,6 +147,12 @@ public class AgregacaoResultadosStep : IPostProcessingStep
 
                 var response = await _dynamoClient.QueryAsync(request);
 
+                if (pageCount % 50 == 0)
+                {
+                    _logger.LogInformation("[AGREGACAO] Progresso da busca: {PageCount} páginas lidas. {TotalAcumulado} registros carregados até agora...", 
+                        pageCount, resultados.Count);
+                }
+
                 // Converter AttributeValue para objetos Resultado
                 foreach (var item in response.Items)
                 {

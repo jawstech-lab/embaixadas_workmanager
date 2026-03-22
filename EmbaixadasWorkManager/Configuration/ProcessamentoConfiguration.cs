@@ -11,4 +11,9 @@ public class ProcessamentoConfiguration
     /// Se deve buscar todas as verificações quando a execução não tem validações específicas
     /// </summary>
     public bool BuscarTodasVerificacoesSeVazio { get; set; } = true;
+
+    /// <summary>
+    /// Tamanho máximo de registros por shard (padrão 100.000)
+    /// </summary>
+    public int ShardSize { get; set; } = 100000;
 }

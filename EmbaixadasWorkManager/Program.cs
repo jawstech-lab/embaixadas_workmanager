@@ -75,12 +75,15 @@ public static class ServiceCollectionExtensions
         {
             services.AddSingleton<IAmazonDynamoDB>(provider =>
             {
+                var dynamoUrl = Environment.GetEnvironmentVariable("AWS_DYNAMODB_URL") ?? awsConfig.ServiceUrl;
                 var config = new AmazonDynamoDBConfig
                 {
-                    ServiceURL = awsConfig.ServiceUrl,
+                    ServiceURL = dynamoUrl,
                     UseHttp = true
                 };
-                return new AmazonDynamoDBClient(awsConfig.AccessKey, awsConfig.SecretKey, config);
+                var access = string.IsNullOrEmpty(awsConfig.AccessKey) ? "dummy" : awsConfig.AccessKey;
+                var secret = string.IsNullOrEmpty(awsConfig.SecretKey) ? "dummy" : awsConfig.SecretKey;
+                return new AmazonDynamoDBClient(access, secret, config);
             });
         }
         else
@@ -91,7 +94,13 @@ public static class ServiceCollectionExtensions
                 {
                     RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(awsConfig.Region)
                 };
-                return new AmazonDynamoDBClient(awsConfig.AccessKey, awsConfig.SecretKey, config);
+
+                if (!string.IsNullOrEmpty(awsConfig.AccessKey) && !string.IsNullOrEmpty(awsConfig.SecretKey))
+                {
+                    return new AmazonDynamoDBClient(awsConfig.AccessKey, awsConfig.SecretKey, config);
+                }
+                
+                return new AmazonDynamoDBClient(config);
             });
         }
 
@@ -112,7 +121,9 @@ public static class ServiceCollectionExtensions
                     ServiceURL = awsConfig.ServiceUrl,
                     UseHttp = true
                 };
-                return new AmazonSQSClient(awsConfig.AccessKey, awsConfig.SecretKey, config);
+                var access = string.IsNullOrEmpty(awsConfig.AccessKey) ? "dummy" : awsConfig.AccessKey;
+                var secret = string.IsNullOrEmpty(awsConfig.SecretKey) ? "dummy" : awsConfig.SecretKey;
+                return new AmazonSQSClient(access, secret, config);
             });
         }
         else
@@ -123,7 +134,13 @@ public static class ServiceCollectionExtensions
                 {
                     RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(awsConfig.Region)
                 };
-                return new AmazonSQSClient(awsConfig.AccessKey, awsConfig.SecretKey, config);
+
+                if (!string.IsNullOrEmpty(awsConfig.AccessKey) && !string.IsNullOrEmpty(awsConfig.SecretKey))
+                {
+                    return new AmazonSQSClient(awsConfig.AccessKey, awsConfig.SecretKey, config);
+                }
+
+                return new AmazonSQSClient(config);
             });
         }
 
@@ -140,6 +157,7 @@ public static class ServiceCollectionExtensions
         
         // Serviços de performance e auditoria
         services.AddSingleton<IExecucaoEmpresaService, ExecucaoEmpresaService>();
+        services.AddSingleton<IDatabaseCountService, DatabaseCountService>();
         
         // Serviços de pós-processamento
         services.AddSingleton<IPostProcessingPipeline, EmbaixadasWorkManager.Services.PostProcessing.PostProcessingPipeline>();

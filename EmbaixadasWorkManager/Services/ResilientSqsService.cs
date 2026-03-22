@@ -203,6 +203,11 @@ public class ResilientSqsService : IResilientSqsService
 
     public async Task<string?> GetQueueUrlAsync(string queueName)
     {
+        if (queueName.StartsWith("http://") || queueName.StartsWith("https://"))
+        {
+            return queueName;
+        }
+
         return await ExecuteWithResilienceAsync(async () =>
         {
             _logger.LogDebug("Obtendo URL da fila: {QueueName}", queueName);

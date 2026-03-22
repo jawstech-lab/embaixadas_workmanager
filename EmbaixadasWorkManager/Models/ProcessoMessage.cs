@@ -26,6 +26,12 @@ public class ProcessoMessage
     public string? Resultado { get; set; }
 
     /// <summary>
+    /// Total de registros processados neste shard
+    /// </summary>
+    [JsonPropertyName("totalRecords")]
+    public int? TotalRecords { get; set; }
+
+    /// <summary>
     /// Timestamp do resultado
     /// </summary>
     [JsonPropertyName("timestamp")]
