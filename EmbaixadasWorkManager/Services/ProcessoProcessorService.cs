@@ -56,31 +56,10 @@ public class ProcessoProcessorService : IProcessoProcessorService
             _logger.LogDebug("Encontrada ExecucaoVerificacao: {ExecucaoVerificacaoId}, ExecucaoId: {ExecucaoId}, VerificacaoId: {VerificacaoId}", 
                 mensagem.ExecucaoVerificacaoId, execucaoVerificacao.ExecucaoId, execucaoVerificacao.VerificacaoId);
 
-            // Buscar execução usando o ExecucaoId da ExecucaoVerificacao
-            var execucao = await _dynamoDbService.GetExecucaoAsync(execucaoVerificacao.ExecucaoId);
-            if (execucao == null)
+            ErroExecucao? erro = null;
+            if (!mensagem.IsSuccess)
             {
-                _logger.LogError("Execução não encontrada: {ExecucaoId}", execucaoVerificacao.ExecucaoId);
-                return false;
-            }
-
-            // Atualizar contadores consolidados
-            if (mensagem.IsSuccess)
-            {
-                execucao.VerificacoesProcessadas++;
-                
-                // Somar TotalRecordsProcessados da ExecucaoVerificacao no TotalApontamentos da Execucao
-                execucao.TotalApontamentos += execucaoVerificacao.TotalRecordsProcessados;
-                
-                _logger.LogDebug("Soma de TotalRecordsProcessados: {TotalRecordsProcessados} adicionado ao TotalApontamentos. Total atual: {TotalApontamentos}", 
-                    execucaoVerificacao.TotalRecordsProcessados, execucao.TotalApontamentos);
-            }
-            else
-            {
-                execucao.VerificacoesComErro++;
-                
-                // Adicionar detalhes do erro à lista de erros
-                var erroExecucao = new ErroExecucao
+                erro = new ErroExecucao
                 {
                     ExecucaoVerificacaoId = execucaoVerificacao.Id,
                     VerificacaoId = execucaoVerificacao.VerificacaoId,
@@ -90,17 +69,36 @@ public class ProcessoProcessorService : IProcessoProcessorService
                     Message = execucaoVerificacao.Erro?.Message ?? "Erro desconhecido",
                     OccurredAt = execucaoVerificacao.Erro?.OccurredAt ?? DateTime.UtcNow
                 };
-                
-                execucao.Erros.Add(erroExecucao);
-                
-                _logger.LogDebug("Erro adicionado à lista de erros da execução: {ExecucaoVerificacaoId} - {ErrorCode}: {Message}", 
-                    erroExecucao.ExecucaoVerificacaoId, erroExecucao.ErrorCode, erroExecucao.Message);
+            }
+
+            // Incremento Atômico Direto no DynamoDB: Performance Máxima e Race Condition Zero.
+            var execucao = await _dynamoDbService.IncrementarContadoresExecucaoAsync(
+                execucaoVerificacao.ExecucaoId, 
+                mensagem.IsSuccess, 
+                mensagem.TotalRecords ?? 0,
+                erro);
+
+            if (execucao == null)
+            {
+                _logger.LogError("Falha ao atualizar contadores atômicos da execução: {ExecucaoId}", execucaoVerificacao.ExecucaoId);
+                return false;
             }
 
             // Verificar se todas as verificações foram processadas
             var totalProcessadas = execucao.VerificacoesProcessadas + execucao.VerificacoesComErro;
-            if (totalProcessadas >= execucao.QuantidadeVerificacoes)
+            
+            // SEGURANÇA CONTRA RACE CONDITION: 
+            // Só permitimos a finalização se a execução já tiver passado pela fase de despacho (Dispatcher).
+            // Se o status for 'AguardandoProcessamento' ou 'EmProcessamento', o Manager ainda está contando shards!
+            bool prontoParaFinalizar = execucao.Status == StatusExecucao.ProcessandoVerificacoes || 
+                                     execucao.Status == StatusExecucao.FinalizadaComSucesso || 
+                                     execucao.Status == StatusExecucao.FinalizadaComErro;
+
+            if (totalProcessadas >= execucao.QuantidadeVerificacoes && prontoParaFinalizar)
             {
+                _logger.LogInformation("🏁 Finalizando execução {Id}. Total Processadas={Processadas}, Esperadas={Total}", 
+                    execucao.Id, totalProcessadas, execucao.QuantidadeVerificacoes);
+                
                 // Todas as verificações foram processadas
                 var finalizadaComSucesso = execucao.VerificacoesComErro == 0;
                 
@@ -113,30 +111,38 @@ public class ProcessoProcessorService : IProcessoProcessorService
                 else
                 {
                     execucao.Status = StatusExecucao.FinalizadaComErro;
-                    _logger.LogWarning("Execução finalizada com erros: {ExecucaoId}. Total de erros: {TotalErros}. Total de apontamentos: {TotalApontamentos}. Erros detalhados: {ErrosDetalhados}", 
-                        execucao.Id, execucao.VerificacoesComErro, execucao.TotalApontamentos, execucao.Erros.Count);
+                    _logger.LogWarning("Execução finalizada com erros: {ExecucaoId}. Total de erros: {TotalErros}. Total de apontamentos: {TotalApontamentos}", 
+                        execucao.Id, execucao.VerificacoesComErro, execucao.TotalApontamentos);
                 }
                 
                 execucao.DataFim = DateTime.UtcNow;
 
-                // NOVO: Atualizar status final nas tabelas de performance
+                // Atualizar status final nas tabelas de performance e no DynamoDB (IMEDIATAMENTE)
                 await AtualizarTabelasPerformanceAsync(execucao);
-
-                // NOVO: Executar pipeline de pós-processamento
-                await ExecutarPosProcessamentoAsync(execucao, finalizadaComSucesso);
+                await _dynamoDbService.UpdateAsync(execucao);
+                
+                // Dispara o pós-processamento (agregação) em background para não bloquear o loop de mensagens SQS
+                _ = Task.Run(async () => {
+                    try {
+                        await ExecutarPosProcessamentoAsync(execucao, finalizadaComSucesso);
+                    } catch (Exception ex) {
+                        _logger.LogError(ex, "Erro no pós-processamento em background para {ExecucaoId}", execucao.Id);
+                    }
+                });
+            }
+            else if (totalProcessadas >= execucao.QuantidadeVerificacoes && !prontoParaFinalizar)
+            {
+                _logger.LogWarning("⚠️ Shards concluídos ANTES do despacho terminar! Aguardando o Manager finalizar o Loop de Envio para {ExecucaoId}. Status atual: {Status}", 
+                    execucao.Id, execucao.Status);
+                // Não finalizamos aqui. O ProcessorService lidará com isso ao final do loop de envio.
             }
             else
             {
-                // Ainda há verificações sendo processadas
-                execucao.Status = StatusExecucao.ProcessandoVerificacoes;
                 _logger.LogDebug("Execução em andamento: {ExecucaoId}. Processadas: {Processadas}/{Total}", 
                     execucao.Id, totalProcessadas, execucao.QuantidadeVerificacoes);
             }
 
-            // Atualizar execução no DynamoDB
-            await _dynamoDbService.UpdateAsync(execucao);
-            
-            _logger.LogInformation("Contadores atualizados para execução {ExecucaoId}: Sucesso={Sucesso}, Erros={Erros}, TotalApontamentos={TotalApontamentos}", 
+            _logger.LogInformation("Contadores atômicos sync para execução {ExecucaoId}: Sucesso={Sucesso}, Erros={Erros}, TotalApontamentos={TotalApontamentos}", 
                 execucao.Id, execucao.VerificacoesProcessadas, execucao.VerificacoesComErro, execucao.TotalApontamentos);
 
             return true;
@@ -182,7 +188,8 @@ public class ProcessoProcessorService : IProcessoProcessorService
                 execucao.Id,
                 execucao.IdEmbaixadas,
                 execucao.Empresa,
-                execucao.Status);
+                execucao.Status,
+                execucao.TotalApontamentos);
 
             _logger.LogInformation("Status final atualizado nas tabelas de performance");
         }

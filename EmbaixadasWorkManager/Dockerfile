@@ -1,6 +1,7 @@
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
 WORKDIR /app
 EXPOSE 80
+RUN apt-get update && apt-get install -y libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 ARG BUILD_ENV=Production
@@ -19,6 +20,11 @@ RUN dotnet publish "EmbaixadasWorkManager.csproj" -c Release -o /app/publish
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
+
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN chown -R appuser:appuser /app
+USER appuser
+
 # A variável de ambiente ASPNETCORE_ENVIRONMENT deve ser definida no docker run
 # Isso fará o .NET Core carregar o appsettings.Production.json automaticamente
 ENTRYPOINT ["dotnet", "EmbaixadasWorkManager.dll"]

@@ -13,6 +13,7 @@ public class ProcessorService : IExecucaoProcessorService
     private readonly IVerificacaoProcessorService _verificacaoProcessor;
     private readonly ISqsService _sqsService;
     private readonly IExecucaoEmpresaService _execucaoEmpresaService;
+    private readonly IPostProcessingPipeline _postProcessingPipeline;
     private readonly ProcessamentoConfiguration _processamentoConfig;
 
     public ProcessorService(
@@ -21,6 +22,7 @@ public class ProcessorService : IExecucaoProcessorService
         IVerificacaoProcessorService verificacaoProcessor,
         ISqsService sqsService,
         IExecucaoEmpresaService execucaoEmpresaService,
+        IPostProcessingPipeline postProcessingPipeline,
         IOptions<ProcessamentoConfiguration> processamentoConfig)
     {
         _logger = logger;
@@ -28,6 +30,7 @@ public class ProcessorService : IExecucaoProcessorService
         _verificacaoProcessor = verificacaoProcessor;
         _sqsService = sqsService;
         _execucaoEmpresaService = execucaoEmpresaService;
+        _postProcessingPipeline = postProcessingPipeline;
         _processamentoConfig = processamentoConfig.Value;
     }
 
@@ -83,6 +86,13 @@ public class ProcessorService : IExecucaoProcessorService
             // Definir status como em processamento e data de início
             execucao.Status = StatusExecucao.EmProcessamento;
             execucao.DataInicio = DateTime.UtcNow;
+            
+            // NOVO: BLINDAGEM CONTRA EARLY COMPLETION 🛡️
+            // Setamos um valor inalcançável para evitar que as threads de SQS 
+            // finalizem a execução caso sejam infinitamente mais rápidas que este loop.
+            execucao.QuantidadeVerificacoes = int.MaxValue;
+            execucao.VerificacoesProcessadas = 0;
+            execucao.VerificacoesComErro = 0;
 
             // Atualizar no DynamoDB
             await _dynamoDbService.UpdateAsync(execucao);
@@ -90,10 +100,9 @@ public class ProcessorService : IExecucaoProcessorService
             // Processar a execução (verificações e queries)
             var processResult = await ProcessExecucaoAsync(execucao);
 
-            // CONSOLIDAÇÃO: Atualizar execução com contadores consolidados
-            // IMPORTANTE: QuantidadeVerificacoes deve refletir apenas as que foram ENVIADAS para a fila
+            // CONSOLIDAÇÃO ACONTECEU DENTRO DO ProcessExecucaoAsync POR CONTA DA RACE CONDITION DO SQS!
+            // Não faremos overwrite manual das variáveis processadas. Apenas refletimos na memória local o Total.
             execucao.QuantidadeVerificacoes = processResult.QueriesEnviadas;
-            execucao.VerificacoesProcessadas = 0;
             
             // Se houve falhas no processamento, adicionar aos erros E incrementar contador
             if (processResult.ErrosFalhas?.Any() == true)
@@ -134,7 +143,8 @@ public class ProcessorService : IExecucaoProcessorService
                             execucao.Id,
                             execucao.IdEmbaixadas ?? new List<string>(),
                             execucao.Empresa,
-                            execucao.Status);
+                            execucao.Status,
+                            execucao.TotalApontamentos);
                         
                         _logger.LogInformation("Status final atualizado nas tabelas de performance (finalização imediata com erro)");
                     }
@@ -150,14 +160,16 @@ public class ProcessorService : IExecucaoProcessorService
                     execucao.DataFim = DateTime.UtcNow;
                     _logger.LogInformation("Execução finalizada imediatamente sem verificações: {ExecucaoId}", execucao.Id);
                 }
-            }
+            } // This brace was missing
             else
             {
                 // Há queries aguardando processamento
-                execucao.Status = StatusExecucao.AguardandoProcessamento;
-                _logger.LogInformation("Execução aguardando processamento: {ExecucaoId}. Queries enviadas: {QueriesEnviadas}, Erros: {Erros}", 
-                    execucao.Id, execucao.QuantidadeVerificacoes, execucao.VerificacoesComErro);
+                execucao.Status = StatusExecucao.ProcessandoVerificacoes; 
+                execucao.TotalRegistrosEstimados = processResult.TotalRegistrosEstimados; // USAR ESTIMATIVA REAL
+                _logger.LogInformation("Execução em processamento: {ExecucaoId}. Total Estimado: {Total}, Queries (Shards) enviadas: {QueriesEnviadas}", 
+                    execucao.Id, execucao.TotalRegistrosEstimados, processResult.QueriesEnviadas);
             }
+        
 
             // Enviar mensagens para fila-execucao-processo (uma por verificação)
             //var filaProcesso = "fila-execucao-processo-dev"; // TODO: Mover para configuração
@@ -174,8 +186,55 @@ public class ProcessorService : IExecucaoProcessorService
             //    await _sqsService.SendMessageAsync(filaProcesso, JsonSerializer.Serialize(mensagemProcesso));
             //}
 
-            // Atualizar execução no DynamoDB com os campos consolidados
-            await _dynamoDbService.UpdateAsync(execucao);
+            // VERIFICAÇÃO FINAL: Em virtude do WorkerProcess ser muito rápido (Race Condition SQS), 
+            // a execução pode já ter processado todas as mensagens de Sucesso neste exato milissegundo.
+            // Atualizamos a Quantidade de forma ATÔMICA, para não apagar 'VerificacoesProcessadas'.
+            var statusFinal = processResult.QueriesEnviadas > 0 
+                ? StatusExecucao.ProcessandoVerificacoes 
+                : StatusExecucao.FinalizadaComSucesso;
+
+            Execucao? execucaoAtualizada;
+
+            // IMPORTANTE: Antes de atualizar, verificamos se ela já não foi finalizada por um shard rápido
+            var execucaoAtual = await _dynamoDbService.GetAsync<Execucao>(execucao.Id);
+            if (execucaoAtual != null && (execucaoAtual.Status == StatusExecucao.FinalizadaComSucesso || execucaoAtual.Status == StatusExecucao.FinalizadaComErro))
+            {
+                _logger.LogInformation("🚀 Finalização precoce detectada: Shards terminaram antes do dispatcher! Mantendo status final: {Status} ({ExecucaoId})", execucaoAtual.Status, execucao.Id);
+                // Mesmo assim atualizamos a QuantidadeVerificacoes para manter a integridade operacional
+                await _dynamoDbService.AtualizarConsolidacaoExecucaoAsync(execucao.Id, processResult.QueriesEnviadas, execucaoAtual.Status);
+                execucaoAtualizada = execucaoAtual;
+            }
+            else
+            {
+                execucaoAtualizada = await _dynamoDbService.AtualizarConsolidacaoExecucaoAsync(
+                    execucao.Id, processResult.QueriesEnviadas, statusFinal);
+            }
+
+            if (execucaoAtualizada != null)
+            {
+                var totalProcessadas = execucaoAtualizada.VerificacoesProcessadas + execucaoAtualizada.VerificacoesComErro;
+
+                if (totalProcessadas >= execucaoAtualizada.QuantidadeVerificacoes && execucaoAtualizada.QuantidadeVerificacoes > 0)
+                {
+                    _logger.LogInformation("🏁 Todas as verificações concluídas durante o despacho! Iniciando encerramento... ({ExecucaoId})", execucao.Id);
+                    
+                    var finalizadaComSucesso = execucaoAtualizada.VerificacoesComErro == 0;
+                    execucaoAtualizada.Status = finalizadaComSucesso ? StatusExecucao.FinalizadaComSucesso : StatusExecucao.FinalizadaComErro;
+                    execucaoAtualizada.DataFim = DateTime.UtcNow;
+
+                    await AtualizarTabelasPerformanceAsync(execucaoAtualizada);
+                    await _dynamoDbService.UpdateAsync(execucaoAtualizada);
+                    
+                    // Dispara o pós-processamento (agregação) em background para não bloquear o loop de mensagens
+                    _ = Task.Run(async () => {
+                        try {
+                            await ExecutarPosProcessamentoAsync(execucaoAtualizada, finalizadaComSucesso);
+                        } catch (Exception ex) {
+                            _logger.LogError(ex, "Erro no pós-processamento em background para {ExecucaoId}", execucaoAtualizada.Id);
+                        }
+                    });
+                }
+            }
 
             _logger.LogInformation(
                 "Execução processada. ExecucaoId: {ExecucaoId}, Status: {Status}, Verificações enviadas: {Verificacoes}, " +
@@ -190,6 +249,74 @@ public class ProcessorService : IExecucaoProcessorService
         {
             _logger.LogError(ex, "Erro ao processar mensagem de execução: {MessageId}", messageId);
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Atualiza status final nas tabelas de performance (ExecucaoResumoView e ExecucaoEmpresaStatus)
+    /// </summary>
+    private async Task AtualizarTabelasPerformanceAsync(Execucao execucao)
+    {
+        try
+        {
+            _logger.LogInformation(
+                "Atualizando status final nas tabelas de performance. " +
+                "ExecucaoId: {ExecucaoId}, Status: {Status}",
+                execucao.Id, execucao.Status);
+
+            await _execucaoEmpresaService.AtualizarStatusFinalAsync(
+                execucao.Id,
+                execucao.IdEmbaixadas,
+                execucao.Empresa,
+                execucao.Status,
+                execucao.TotalApontamentos);
+
+            _logger.LogInformation("Status final atualizado nas tabelas de performance");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, 
+                "Erro ao atualizar status final nas tabelas de performance. Continuando... ExecucaoId: {ExecucaoId}",
+                execucao.Id);
+        }
+    }
+
+    /// <summary>
+    /// Executa o pipeline de pós-processamento após finalização da execução
+    /// </summary>
+    private async Task ExecutarPosProcessamentoAsync(Execucao execucao, bool finalizadaComSucesso)
+    {
+        try
+        {
+            _logger.LogInformation("Iniciando pos-processamento PRECOCE para execucao {ExecucaoId}", execucao.Id);
+
+            var context = new PostProcessingContext
+            {
+                Execucao = execucao,
+                FinalizadaComSucesso = finalizadaComSucesso,
+                Metadata = new Dictionary<string, object>
+                {
+                    { "TotalVerificacoes", execucao.QuantidadeVerificacoes },
+                    { "VerificacoesProcessadas", execucao.VerificacoesProcessadas },
+                    { "VerificacoesComErro", execucao.VerificacoesComErro },
+                    { "TotalApontamentos", execucao.TotalApontamentos }
+                }
+            };
+
+            var resultado = await _postProcessingPipeline.ExecuteAsync(context);
+
+            if (resultado.Success)
+            {
+                _logger.LogInformation("Pos-processamento concluido com sucesso. ExecucaoId: {ExecucaoId}", execucao.Id);
+            }
+            else
+            {
+                _logger.LogWarning("Pos-processamento concluido com falhas. ExecucaoId: {ExecucaoId}", execucao.Id);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao executar pos-processamento PRECOCE para execucao {ExecucaoId}", execucao.Id);
         }
     }
 
@@ -303,7 +430,9 @@ public class ProcessorService : IExecucaoProcessorService
                 execucao.TotalApontamentos = 0;
                 execucao.Status = StatusExecucao.FinalizadaComSucesso;
                 execucao.DataFim = DateTime.UtcNow;
-                
+                execucao.DataFim = execucao.Status == StatusExecucao.FinalizadaComSucesso || execucao.Status == StatusExecucao.FinalizadaComErro 
+                    ? DateTime.UtcNow : null;
+
                 await _dynamoDbService.UpdateAsync(execucao);
                 
                 // Atualizar tabelas de performance com status final
@@ -313,7 +442,8 @@ public class ProcessorService : IExecucaoProcessorService
                         execucao.Id,
                         execucao.IdEmbaixadas ?? new List<string>(),
                         execucao.Empresa,
-                        execucao.Status);
+                        execucao.Status,
+                        execucao.TotalApontamentos);
                     
                     _logger.LogInformation("Status final atualizado nas tabelas de performance (0 verificações)");
                 }
@@ -347,16 +477,18 @@ public class ProcessorService : IExecucaoProcessorService
             _logger.LogInformation("Iniciando processamento de {Count} verificacoes", validacoesParaProcessar.Count);
             var totalComSucesso = 0;
             var totalComErro = 0;
+            var totalRegistrosEstimados = 0;
             var errosFalhas = new List<ErroExecucao>();
             
             foreach (var verificacaoId in validacoesParaProcessar)
             {
                 try
                 {
-                    var (enviadas, erro) = await _verificacaoProcessor.ProcessarVerificacaoAsync(execucao, verificacaoId);
+                    var (enviadas, totalEncontrado, erro) = await _verificacaoProcessor.ProcessarVerificacaoAsync(execucao, verificacaoId);
                     if (enviadas > 0)
                     {
                         queriesEnviadas += enviadas;
+                        totalRegistrosEstimados += totalEncontrado;
                         totalComSucesso++;
                     }
                     else if (erro != null)
@@ -373,8 +505,8 @@ public class ProcessorService : IExecucaoProcessorService
                         var erroGenerico = new ErroExecucao
                         {
                             VerificacaoId = verificacaoId,
-                            ErrorCode = "PROCESSAMENTO_FALHOU",
-                            Message = "Verificação não pôde ser enviada para a fila (erro desconhecido).",
+                            ErrorCode = "DISPATCH_FAILED",
+                            Message = $"A verificação '{verificacaoId}' não gerou shards e não retornou erro específico do provedor. Verifique o SQL ou parâmetros.",
                             OccurredAt = DateTime.UtcNow
                         };
                         errosFalhas.Add(erroGenerico);
@@ -418,6 +550,7 @@ public class ProcessorService : IExecucaoProcessorService
                 Error = null,
                 ValidacoesProcessadas = validacoesParaProcessar.Count,
                 QueriesEnviadas = queriesEnviadas,
+                TotalRegistrosEstimados = totalRegistrosEstimados,
                 ErrosFalhas = errosFalhas.Any() ? errosFalhas : null
             };
         }
@@ -442,5 +575,6 @@ public class ProcessResult
     public string? Error { get; set; }
     public int ValidacoesProcessadas { get; set; }
     public int QueriesEnviadas { get; set; }
+    public int TotalRegistrosEstimados { get; set; } // NOVO: Soma real das volumetrias
     public List<ErroExecucao>? ErrosFalhas { get; set; }
 }
