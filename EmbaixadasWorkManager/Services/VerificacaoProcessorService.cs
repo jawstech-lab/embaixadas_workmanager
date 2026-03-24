@@ -35,7 +35,9 @@ public class VerificacaoProcessorService : IVerificacaoProcessorService
 		_sqsConfiguration = sqsConfiguration;
 		_databaseCountService = databaseCountService;
 		_processamentoConfig = processamentoConfig.Value;
-		_dbConnectionString = configuration["DB_CONNECTION_STRING"] ?? string.Empty;
+		_dbConnectionString = configuration["DB_CONNECTION_STRING"] 
+			?? configuration["Database:ConnectionString"] 
+			?? string.Empty;
 	}
 
 	public async Task<(int queriesEnviadas, int totalRegistros, ErroExecucao? erro)> ProcessarVerificacaoAsync(Execucao execucao, string verificacaoId)
