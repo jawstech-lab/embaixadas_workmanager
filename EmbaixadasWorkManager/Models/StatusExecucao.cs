@@ -37,6 +37,11 @@ public static class StatusExecucao
     public const string VerificacoesConcluidas = "VerificacoesConcluidas";
 
     /// <summary>
+    /// Agregando resultados e consolidando dashboards
+    /// </summary>
+    public const string AgregandoResultados = "AgregandoResultados";
+
+    /// <summary>
     /// Execução finalizada com sucesso
     /// </summary>
     public const string FinalizadaComSucesso = "FinalizadaComSucesso";

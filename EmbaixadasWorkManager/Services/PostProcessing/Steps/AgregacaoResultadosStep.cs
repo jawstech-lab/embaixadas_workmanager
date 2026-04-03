@@ -117,149 +117,201 @@ public class AgregacaoResultadosStep : IPostProcessingStep
     }
 
     /// <summary>
-    /// ETAPA 1: Busca todos os apontamentos de uma execução usando o GSI
+    /// ETAPA 1: Busca todos os apontamentos de uma execução usando o GSI em 20 shards de forma paralela.
     /// </summary>
     private async Task<List<Resultado>> BuscarApontamentosAsync(string execucaoId)
     {
         try
         {
-            var resultados = new List<Resultado>();
-            Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
-            int pageCount = 0;
+            var todasAsTasks = new List<Task<List<Resultado>>>();
 
-            _logger.LogDebug("Buscando apontamentos usando GSI_Agregacao. GSI1_PK = EXEC#{ExecucaoId}", execucaoId);
+            _logger.LogInformation("Iniciando busca paralela de apontamentos em 20 shards do GSI_Agregacao para ExecucaoId: {ExecucaoId}", execucaoId);
 
-            do
+            for (int i = 0; i < 20; i++)
             {
-                pageCount++;
-                
-                var request = new QueryRequest
-                {
-                    TableName = _dynamoConfig.TableNameResultado,
-                    IndexName = "GSI_Agregacao",
-                    KeyConditionExpression = "GSI1_PK = :execId",
-                    ExpressionAttributeValues = new Dictionary<string, AttributeValue>
-                    {
-                        { ":execId", new AttributeValue { S = $"EXEC#{execucaoId}" } }
-                    },
-                    ExclusiveStartKey = lastEvaluatedKey
-                };
-
-                var response = await _dynamoClient.QueryAsync(request);
-
-                if (pageCount % 50 == 0)
-                {
-                    _logger.LogInformation("[AGREGACAO] Progresso da busca: {PageCount} páginas lidas. {TotalAcumulado} registros carregados até agora...", 
-                        pageCount, resultados.Count);
-                }
-
-                // Converter AttributeValue para objetos Resultado
-                foreach (var item in response.Items)
-                {
-                    // Parsear Nivel com validação (campo é String no DynamoDB)
-                    int nivelParsed = 1; // Padrão: Nivel 1 (caso não exista)
-                    if (item.ContainsKey("Nivel"))
-                    {
-                        // Nivel é salvo como String (S) no DynamoDB, valores de 1 a 5
-                        if (int.TryParse(item["Nivel"].S, out var nivelTemp))
-                        {
-                            nivelParsed = nivelTemp;
-                            
-                            // Validar se Nivel é válido (1 a 5)
-                            if (nivelParsed < 1 || nivelParsed > 5)
-                            {
-                                _logger.LogWarning(
-                                    "Nivel fora do range valido (1-5): {Nivel}. Usando Nivel=1 como padrao. PK={PK}",
-                                    nivelParsed, item.ContainsKey("PK") ? item["PK"].S : "unknown");
-                                nivelParsed = 1;
-                            }
-                        }
-                        else
-                        {
-                            _logger.LogWarning(
-                                "Falha ao parsear Nivel (valor: {Valor}). Usando Nivel=1 como padrao. PK={PK}",
-                                item["Nivel"].S, item.ContainsKey("PK") ? item["PK"].S : "unknown");
-                        }
-                    }
-                    else
-                    {
-                        _logger.LogDebug(
-                            "Campo Nivel nao encontrado no item. Usando Nivel=1 como padrao. PK={PK}",
-                            item.ContainsKey("PK") ? item["PK"].S : "unknown");
-                    }
-
-                    // Parsear IdEmbaixadas (Lista no DynamoDB)
-                    var idEmbaixadas = new List<string>();
-                    if (item.ContainsKey("IdEmbaixadas") && item["IdEmbaixadas"].L != null)
-                    {
-                        foreach (var embaixadaValue in item["IdEmbaixadas"].L)
-                        {
-                            if (!string.IsNullOrEmpty(embaixadaValue.S))
-                            {
-                                idEmbaixadas.Add(embaixadaValue.S);
-                            }
-                        }
-                    }
-                    // Fallback: Se IdEmbaixadas não existe, usar IdEmbaixada (campo único)
-                    else if (item.ContainsKey("IdEmbaixada") && !string.IsNullOrEmpty(item["IdEmbaixada"].S))
-                    {
-                        idEmbaixadas.Add(item["IdEmbaixada"].S);
-                    }
-
-                    var resultado = new Resultado
-                    {
-                        PK = item.ContainsKey("PK") ? item["PK"].S : string.Empty,
-                        SK = item.ContainsKey("SK") ? item["SK"].S : string.Empty,
-                        GSI1_PK = item.ContainsKey("GSI1_PK") ? item["GSI1_PK"].S : string.Empty,
-                        GSI1_SK = item.ContainsKey("GSI1_SK") ? item["GSI1_SK"].S : string.Empty,
-                        ExecucaoId = item.ContainsKey("ExecucaoId") ? item["ExecucaoId"].S : string.Empty,
-                        VerificacaoId = item.ContainsKey("VerificacaoId") ? item["VerificacaoId"].S : string.Empty,
-                        Empresa = item.ContainsKey("Empresa") ? item["Empresa"].S : string.Empty,
-                        Tabela = item.ContainsKey("Tabela") ? item["Tabela"].S : string.Empty,
-                        Campo = item.ContainsKey("Campo") ? item["Campo"].S : string.Empty,
-                        Referencia = item.ContainsKey("Referencia") ? item["Referencia"].S : string.Empty,
-                        TipoApontamento = item.ContainsKey("TipoApontamento") ? item["TipoApontamento"].S : string.Empty,
-                        Nivel = nivelParsed,  // ← VALIDADO (nunca será 0)
-                        DetalheErro = item.ContainsKey("DetalheErro") ? item["DetalheErro"].S : string.Empty,  // ← CORRIGIDO
-                        ValorEncontrado = item.ContainsKey("ValorEncontrado") ? item["ValorEncontrado"].S : null,
-                        ValorEsperado = item.ContainsKey("ValorEsperado") ? item["ValorEsperado"].S : null,
-                        IdEmbaixada = idEmbaixadas.FirstOrDefault() ?? string.Empty,  // Compatibilidade
-                        IdEmbaixadas = idEmbaixadas  // ← LISTA DE EMBAIXADAS
-                    };
-
-                    resultados.Add(resultado);
-                }
-
-                lastEvaluatedKey = response.LastEvaluatedKey;
-
-            } while (lastEvaluatedKey != null && lastEvaluatedKey.Count > 0);
-
-            _logger.LogInformation(
-                "Busca no GSI concluida. Total de {Pages} páginas processadas. " +
-                "Total de apontamentos encontrados: {Total}",
-                pageCount, resultados.Count);
-            
-            // ✅ LOG DETALHADO: Contagem por empresa/verificacao para debug
-            var contagemPorEmpresaVerif = resultados
-                .GroupBy(r => new { r.Empresa, r.VerificacaoId })
-                .Select(g => new { g.Key.Empresa, g.Key.VerificacaoId, Count = g.Count() })
-                .OrderByDescending(x => x.Count)
-                .Take(10)
-                .ToList();
-            
-            foreach (var item in contagemPorEmpresaVerif)
-            {
-                _logger.LogDebug("Empresa={Empresa}, VerificacaoId={VerifId}: {Count} apontamentos",
-                    item.Empresa, item.VerificacaoId, item.Count);
+                int shardPart = i;
+                todasAsTasks.Add(BuscarShardApontamentosAsync(execucaoId, shardPart));
             }
 
-            return resultados;
+            var resultadosPorShard = await Task.WhenAll(todasAsTasks);
+            var resultadosTotais = resultadosPorShard.SelectMany(r => r).ToList();
+
+            _logger.LogInformation("Busca paralela concluída. Total de apontamentos encontrados em todos os shards: {Total}", resultadosTotais.Count);
+            
+            // --- FALLBACK DE LEGADO ---
+            // Se não encontrou nada nos shards, pode ser uma execução antiga ou que falhou na transição
+            if (resultadosTotais.Count == 0)
+            {
+                _logger.LogInformation("Zero resultados nos shards. Tentando fallback legado para ExecucaoId: {ExecucaoId}", execucaoId);
+                var resultadosLegados = await BuscarApontamentosLegadosAsync(execucaoId);
+                if (resultadosLegados.Count > 0)
+                {
+                    _logger.LogInformation("Sucesso no fallback legado! Encontrados {Count} registros no formato antigo.", resultadosLegados.Count);
+                    return resultadosLegados;
+                }
+            }
+
+            return resultadosTotais;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Erro ao buscar apontamentos da execucao {ExecucaoId} no GSI", execucaoId);
+            _logger.LogError(ex, "Erro fatal ao buscar apontamentos da execução {ExecucaoId} em múltiplos shards", execucaoId);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Busca apontamentos no formato legado (sem shards) para compatibilidade.
+    /// </summary>
+    private async Task<List<Resultado>> BuscarApontamentosLegadosAsync(string execucaoId)
+    {
+        var resultados = new List<Resultado>();
+        Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
+        string gsi1Pk = $"EXEC#{execucaoId}"; // Formato antigo sem #P#
+
+        do
+        {
+            var request = new QueryRequest
+            {
+                TableName = _dynamoConfig.TableNameResultado,
+                IndexName = "GSI_Agregacao",
+                KeyConditionExpression = "GSI1_PK = :execId",
+                ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+                {
+                    { ":execId", new AttributeValue { S = gsi1Pk } }
+                },
+                ExclusiveStartKey = lastEvaluatedKey
+            };
+
+            var response = await _dynamoClient.QueryAsync(request);
+            foreach (var item in response.Items)
+            {
+                resultados.Add(MapResultado(item));
+            }
+            lastEvaluatedKey = response.LastEvaluatedKey;
+        } while (lastEvaluatedKey != null && lastEvaluatedKey.Count > 0);
+
+        return resultados;
+    }
+
+    /// <summary>
+    /// Busca apontamentos para um shard específico de uma execução usando o GSI.
+    /// </summary>
+    private async Task<List<Resultado>> BuscarShardApontamentosAsync(string execucaoId, int shardPart)
+    {
+        var resultadosShard = new List<Resultado>();
+        Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
+        string gsi1Pk = $"EXEC#{execucaoId}#P#{shardPart}";
+        int pageCount = 0;
+
+        do
+        {
+            pageCount++;
+            var request = new QueryRequest
+            {
+                TableName = _dynamoConfig.TableNameResultado,
+                IndexName = "GSI_Agregacao",
+                KeyConditionExpression = "GSI1_PK = :execId",
+                ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+                {
+                    { ":execId", new AttributeValue { S = gsi1Pk } }
+                },
+                ExclusiveStartKey = lastEvaluatedKey
+            };
+
+            var response = await _dynamoClient.QueryAsync(request);
+            
+            foreach (var item in response.Items)
+            {
+                resultadosShard.Add(MapResultado(item));
+            }
+
+            lastEvaluatedKey = response.LastEvaluatedKey;
+
+        } while (lastEvaluatedKey != null && lastEvaluatedKey.Count > 0);
+
+        if (resultadosShard.Count > 0)
+        {
+            _logger.LogDebug("[SHARD {Shard}] Encontrados {Count} registros em {Pages} páginas", shardPart, resultadosShard.Count, pageCount);
+        }
+
+        return resultadosShard;
+    }
+
+    /// <summary>
+    /// Mapeia um Dictionary<string, AttributeValue> do DynamoDB para um objeto Resultado.
+    /// </summary>
+    private Resultado MapResultado(Dictionary<string, AttributeValue> item)
+    {
+        // Parsear Nivel com validação (campo é String no DynamoDB)
+        int nivelParsed = 1; // Padrão: Nivel 1 (caso não exista)
+        if (item.ContainsKey("Nivel"))
+        {
+            // Nivel é salvo como String (S) no DynamoDB, valores de 1 a 5
+            if (int.TryParse(item["Nivel"].S, out var nivelTemp))
+            {
+                nivelParsed = nivelTemp;
+                
+                // Validar se Nivel é válido (1 a 5)
+                if (nivelParsed < 1 || nivelParsed > 5)
+                {
+                    _logger.LogWarning("Nivel fora do range valido (1-5): {Nivel}. Usando Nivel=1. PK={PK}", 
+                        nivelParsed, item.ContainsKey("PK") ? item["PK"].S : "unknown");
+                    nivelParsed = 1;
+                }
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Falha ao parsear Nivel (valor: {Valor}). Usando Nivel=1 como padrao. PK={PK}",
+                    item["Nivel"].S, item.ContainsKey("PK") ? item["PK"].S : "unknown");
+            }
+        }
+        else
+        {
+            _logger.LogDebug(
+                "Campo Nivel nao encontrado no item. Usando Nivel=1 como padrao. PK={PK}",
+                item.ContainsKey("PK") ? item["PK"].S : "unknown");
+        }
+
+        // Parsear IdEmbaixadas (Lista no DynamoDB)
+        var idEmbaixadas = new List<string>();
+        if (item.ContainsKey("IdEmbaixadas") && item["IdEmbaixadas"].L != null)
+        {
+            foreach (var embaixadaValue in item["IdEmbaixadas"].L)
+            {
+                if (!string.IsNullOrEmpty(embaixadaValue.S))
+                {
+                    idEmbaixadas.Add(embaixadaValue.S);
+                }
+            }
+        }
+        // Fallback: Se IdEmbaixadas não existe, usar IdEmbaixada (campo único)
+        else if (item.ContainsKey("IdEmbaixada") && !string.IsNullOrEmpty(item["IdEmbaixada"].S))
+        {
+            idEmbaixadas.Add(item["IdEmbaixada"].S);
+        }
+
+        return new Resultado
+        {
+            PK = item.ContainsKey("PK") ? item["PK"].S : string.Empty,
+            SK = item.ContainsKey("SK") ? item["SK"].S : string.Empty,
+            GSI1_PK = item.ContainsKey("GSI1_PK") ? item["GSI1_PK"].S : string.Empty,
+            GSI1_SK = item.ContainsKey("GSI1_SK") ? item["GSI1_SK"].S : string.Empty,
+            ExecucaoId = item.ContainsKey("ExecucaoId") ? item["ExecucaoId"].S : string.Empty,
+            VerificacaoId = item.ContainsKey("VerificacaoId") ? item["VerificacaoId"].S : string.Empty,
+            Empresa = item.ContainsKey("Empresa") ? item["Empresa"].S : string.Empty,
+            Tabela = item.ContainsKey("Tabela") ? item["Tabela"].S : string.Empty,
+            Campo = item.ContainsKey("Campo") ? item["Campo"].S : string.Empty,
+            Referencia = item.ContainsKey("Referencia") ? item["Referencia"].S : string.Empty,
+            TipoApontamento = item.ContainsKey("TipoApontamento") ? item["TipoApontamento"].S : string.Empty,
+            Nivel = nivelParsed,
+            DetalheErro = item.ContainsKey("DetalheErro") ? item["DetalheErro"].S : string.Empty,
+            ValorEncontrado = item.ContainsKey("ValorEncontrado") ? item["ValorEncontrado"].S : null,
+            ValorEsperado = item.ContainsKey("ValorEsperado") ? item["ValorEsperado"].S : null,
+            IdEmbaixada = idEmbaixadas.FirstOrDefault() ?? string.Empty,
+            IdEmbaixadas = idEmbaixadas
+        };
     }
 
 

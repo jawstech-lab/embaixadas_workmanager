@@ -185,6 +185,7 @@ public static class ServiceCollectionExtensions
 
         // Worker
         services.AddHostedService<Worker>();
+        services.AddHostedService<SystemHeartbeatService>();
 
         return services;
     }

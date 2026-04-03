@@ -258,4 +258,29 @@ public class SqsService : ISqsService
             return false;
         }
     }
+
+    public async Task<int> GetQueueApproximateMessageCountAsync(string queueUrl)
+    {
+        try
+        {
+            var request = new GetQueueAttributesRequest
+            {
+                QueueUrl = queueUrl,
+                AttributeNames = new List<string> { "ApproximateNumberOfMessages" }
+            };
+
+            var response = await _sqsClient.GetQueueAttributesAsync(request);
+            if (response.Attributes.TryGetValue("ApproximateNumberOfMessages", out var countStr) && int.TryParse(countStr, out var count))
+            {
+                return count;
+            }
+
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao obter contagem de mensagens da fila: {QueueUrl}", queueUrl);
+            return 0;
+        }
+    }
 }

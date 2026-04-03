@@ -102,19 +102,8 @@ public class ProcessoProcessorService : IProcessoProcessorService
                 // Todas as verificações foram processadas
                 var finalizadaComSucesso = execucao.VerificacoesComErro == 0;
                 
-                if (finalizadaComSucesso)
-                {
-                    execucao.Status = StatusExecucao.FinalizadaComSucesso;
-                    _logger.LogInformation("Execução finalizada com sucesso: {ExecucaoId}. Total de apontamentos: {TotalApontamentos}", 
-                        execucao.Id, execucao.TotalApontamentos);
-                }
-                else
-                {
-                    execucao.Status = StatusExecucao.FinalizadaComErro;
-                    _logger.LogWarning("Execução finalizada com erros: {ExecucaoId}. Total de erros: {TotalErros}. Total de apontamentos: {TotalApontamentos}", 
-                        execucao.Id, execucao.VerificacoesComErro, execucao.TotalApontamentos);
-                }
-                
+                // MUDANÇA: Não finaliza imediatamente aqui, apenas marca como concluída para o pós-processamento assumir
+                execucao.Status = StatusExecucao.VerificacoesConcluidas;
                 execucao.DataFim = DateTime.UtcNow;
 
                 // Atualizar status final nas tabelas de performance e no DynamoDB (IMEDIATAMENTE)
@@ -225,6 +214,11 @@ public class ProcessoProcessorService : IProcessoProcessorService
                 }
             };
 
+            // ATUALIZAR STATUS PARA AGREGANDO RESULTADOS 🔄
+            execucao.Status = StatusExecucao.AgregandoResultados;
+            await _dynamoDbService.UpdateAsync(execucao);
+            await AtualizarTabelasPerformanceAsync(execucao);
+
             // Executar pipeline
             var resultado = await _postProcessingPipeline.ExecuteAsync(context);
 
@@ -236,6 +230,8 @@ public class ProcessoProcessorService : IProcessoProcessorService
                     execucao.Id,
                     resultado.TotalStepsExecuted,
                     resultado.TotalExecutionTime.TotalMilliseconds);
+                
+                execucao.Status = StatusExecucao.FinalizadaComSucesso;
             }
             else
             {
@@ -246,8 +242,14 @@ public class ProcessoProcessorService : IProcessoProcessorService
                     resultado.TotalStepsExecuted,
                     resultado.TotalStepsFailed,
                     resultado.TotalExecutionTime.TotalMilliseconds);
+
+                execucao.Status = StatusExecucao.FinalizadaComErro;
             }
-        }
+
+            execucao.DataFim = DateTime.UtcNow;
+            await _dynamoDbService.UpdateAsync(execucao);
+            await AtualizarTabelasPerformanceAsync(execucao);
+捉        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Erro ao executar pos-processamento para execucao {ExecucaoId}. Continuando...", 

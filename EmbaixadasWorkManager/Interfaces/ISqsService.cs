@@ -10,5 +10,6 @@ public interface ISqsService
     Task<bool> ChangeMessageVisibilityAsync(string queueUrl, string receiptHandle, int visibilityTimeoutSeconds);
     Task<string?> GetQueueUrlAsync(string queueName);
     Task<bool> QueueExistsAsync(string queueUrl);
+    Task<int> GetQueueApproximateMessageCountAsync(string queueUrl);
 }
 

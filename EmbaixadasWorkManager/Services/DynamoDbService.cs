@@ -55,6 +55,8 @@ public class DynamoDbService : IDynamoDbService
             return _config.TableNameResultadoAgregado;
         if (type == typeof(Justificativa))
             return _config.TableNameJustificativa;
+        if (type == typeof(SistemaStatus) || type == typeof(WorkerPulse))
+            return _config.TableNameSistemaStatus;
         
         return null; // Usa o nome do atributo [DynamoDBTable]
     }

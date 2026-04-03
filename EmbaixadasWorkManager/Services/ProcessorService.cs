@@ -219,8 +219,9 @@ public class ProcessorService : IExecucaoProcessorService
                     _logger.LogInformation("🏁 Todas as verificações concluídas durante o despacho! Iniciando encerramento... ({ExecucaoId})", execucao.Id);
                     
                     var finalizadaComSucesso = execucaoAtualizada.VerificacoesComErro == 0;
-                    execucaoAtualizada.Status = finalizadaComSucesso ? StatusExecucao.FinalizadaComSucesso : StatusExecucao.FinalizadaComErro;
-                    execucaoAtualizada.DataFim = DateTime.UtcNow;
+                    // MUDANÇA: Não finaliza imediatamente aqui, apenas marca como concluída para o pós-processamento assumir
+                    execucaoAtualizada.Status = StatusExecucao.VerificacoesConcluidas;
+                    execucaoAtualizada.DataFim = DateTime.UtcNow; // Mantém registro do fim das queries
 
                     await AtualizarTabelasPerformanceAsync(execucaoAtualizada);
                     await _dynamoDbService.UpdateAsync(execucaoAtualizada);
@@ -290,6 +291,13 @@ public class ProcessorService : IExecucaoProcessorService
         {
             _logger.LogInformation("Iniciando pos-processamento PRECOCE para execucao {ExecucaoId}", execucao.Id);
 
+            // ATUALIZAR STATUS PARA AGREGANDO RESULTADOS 🔄
+            execucao.Status = StatusExecucao.AgregandoResultados;
+            await _dynamoDbService.UpdateAsync(execucao);
+            
+            // Também atualizar nas tabelas de performance para o Portal ver o progresso
+            await AtualizarTabelasPerformanceAsync(execucao);
+
             var context = new PostProcessingContext
             {
                 Execucao = execucao,
@@ -308,11 +316,17 @@ public class ProcessorService : IExecucaoProcessorService
             if (resultado.Success)
             {
                 _logger.LogInformation("Pos-processamento concluido com sucesso. ExecucaoId: {ExecucaoId}", execucao.Id);
+                execucao.Status = StatusExecucao.FinalizadaComSucesso;
             }
             else
             {
                 _logger.LogWarning("Pos-processamento concluido com falhas. ExecucaoId: {ExecucaoId}", execucao.Id);
+                execucao.Status = StatusExecucao.FinalizadaComErro;
             }
+
+            execucao.DataFim = DateTime.UtcNow;
+            await _dynamoDbService.UpdateAsync(execucao);
+            await AtualizarTabelasPerformanceAsync(execucao);
         }
         catch (Exception ex)
         {

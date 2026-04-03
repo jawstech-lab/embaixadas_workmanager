@@ -163,11 +163,14 @@ public class Resultado
     }
 
     /// <summary>
-    /// Cria o GSI1_PK no formato correto
+    /// Cria o GSI1_PK no formato fragmentado (Salting) para evitar Hot Keys.
+    /// Distribui os dados em 20 shards (P#0 a P#19).
     /// </summary>
-    public static string CriarGSI1_PK(string execucaoId)
+    public static string CriarGSI1_PK(string execucaoId, string referencia)
     {
-        return $"EXEC#{execucaoId}";
+        // Usa o hash da referência para distribuir de forma determinística
+        int shard = Math.Abs(referencia.GetHashCode()) % 20;
+        return $"EXEC#{execucaoId}#P#{shard}";
     }
 
     /// <summary>

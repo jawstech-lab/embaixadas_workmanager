@@ -48,6 +48,9 @@ public class DynamoDbConfiguration
     
     // Tabela de justificativas
     public string TableNameJustificativa { get; set; } = "Justificativas";
+
+    // Tabela de status do sistema (Heartbeat)
+    public string TableNameSistemaStatus { get; set; } = "SistemaStatus";
     
     public string ServiceUrl { get; set; } = string.Empty;
     public bool UseLocalStack { get; set; } = false;
