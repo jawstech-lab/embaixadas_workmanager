@@ -249,7 +249,7 @@ public class ProcessoProcessorService : IProcessoProcessorService
             execucao.DataFim = DateTime.UtcNow;
             await _dynamoDbService.UpdateAsync(execucao);
             await AtualizarTabelasPerformanceAsync(execucao);
-捉        }
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Erro ao executar pos-processamento para execucao {ExecucaoId}. Continuando...", 
